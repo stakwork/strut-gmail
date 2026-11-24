@@ -36,7 +36,7 @@ Three rules hold in every step (the plan's §6):
 | `steps/_gmail.ts` | What the steps share: the token, Gmail's API, a message's shape, a message to write |
 | `steps/_shape.ts` | A message's shape as the steps declare it |
 | `steps/look.ts` | Replies' look at the person's mail: the ids of what is new, under their search, or nothing when Replies is off |
-| `steps/context.ts` | What a reply to one message is written from, or why there is none ("Replies", below) |
+| `steps/context.ts` | What a reply to one message is written from, or why there is none ("Replies", below). Counts each try, and hands a message tried three times to the person |
 | `steps/answer.ts` | Acts on what the model wrote for one message, once: sent when the person's choice allows it, else a draft; a handoff; or nothing |
 | `steps/settings.ts` | The person's choices for Replies: on or off, who gets a reply without a click, the search, their own instructions |
 | `steps/save.ts` | Changes those choices. From the Gmail app alone, by the person themselves |
@@ -51,7 +51,7 @@ Three rules hold in every step (the plan's §6):
 | `steps/_ask.ts` | What the Email Jamie steps share: the +jamie address, the answer's mark, the turns, what an answer says |
 | `concepts/Mail Replies.md` | How to answer: tone, length, what to hand to the person, when to say nothing |
 | `concepts/Email.md` | Under `Job`: how a job uses the four mail tools when a person asks in a chat |
-| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`, `db/003-ask.sql`) |
+| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`, `db/003-ask.sql`, `db/004-tries.sql`) |
 
 ## The mail steps
 
@@ -231,6 +231,16 @@ the next run looks from the same place: what was answered stands down as
 answered, and the failed message and the mail after it are answered then,
 each once.
 
+**A mail that keeps failing goes to the person** (Evan's ruling). `context`
+counts a try each time it sets out to write a reply, before it gathers the
+mail, and an outcome that `answer` records clears the count. So every way a
+try can end without one counts the same: the model call failing, no
+structured answer, the run cut off. A message with three tries and no
+outcome is not tried a fourth time: it goes under Needs you as "Jamie
+couldn't write a reply", nothing is drafted or sent for it, and the run
+goes on to the mail after it. A message that fails once or twice and then
+gets an answer is answered as usual, and leaves no trace of its tries.
+
 ### Send
 
 The person picks who gets a reply without a click (the plan's §4.3,
@@ -407,7 +417,10 @@ the app, every row keyed by the person's strut actor:
   it did (`draft`, `sent`, `handoff`, `nothing`, `stood-down`), the draft's
   id while it is the thread's latest, the id of the message it sent, a
   handoff's reason, and why a reply that could have been sent was held
-  back.
+  back;
+- `tries`: for a message Replies set out to answer and has no outcome for
+  yet, how many times it tried (`db/004-tries.sql`). The row goes once
+  there is an outcome.
 
 For Email Jamie, `people` also keeps whether it is on, and:
 
@@ -611,7 +624,9 @@ Every person's own:
     or presses Enter.
 - **Needs you:** the threads handed to the person, newest first, each with
   the sender, the subject and the reason. A row opens its thread in Gmail.
-  A thread leaves the list once the person writes in it.
+  A thread leaves the list once the person writes in it. A mail Replies
+  tried three times without writing a reply is here too, as "Jamie
+  couldn't write a reply".
 - **Sent for you:** what went out without a click, newest first, each with
   the sender it answered and the reply's first line. A row opens its
   thread in Gmail. "Nothing yet" when there is none, as under Draft. A
@@ -660,9 +675,10 @@ says to open Gmail in Stadeum.
   person's key. Stadeum sets a default once any provider has a key, so
   only a box with none gets here, and there the gateway refuses the call
   and the mail waits.
-- **A message whose model call fails every time holds back the mail after
-  it.** Each run stops at it and keeps its `since`, so nothing is lost,
-  but nothing after it is answered until that call succeeds.
+- **A long outage hands mail to the person.** While every model call
+  fails, each message in turn gets three tries, one a run, then goes under
+  Needs you: one message every three runs, oldest first, until calls work
+  again. The mail after it waits, and is answered then.
 
 ## What Google's documentation says
 

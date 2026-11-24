@@ -1,6 +1,6 @@
 import { z, defineStep } from "strut";
 import { asCtx, idsOf, isDraft, mailOf, messageOf, messagesOf, needToken, ownAddressesOf, replyTargets, threadOf, timeOf, withoutDrafts } from "./_gmail.js";
-import { dbOf, handledOf, nonce, pagesOf, personOf, promptOf, sentIdsOf, settingsOf, standDown, systemOf, toSenderAlone, toSeveral, writtenTo, type ReplyCtx } from "./_replies.js";
+import { COULDNT_WRITE, TRIES, dbOf, handledOf, nonce, pagesOf, personOf, promptOf, record, sentIdsOf, settingsOf, standDown, systemOf, toSenderAlone, toSeveral, tried, triesOf, writtenTo, type ReplyCtx } from "./_replies.js";
 
 const address = z.object({ address: z.string(), name: z.string().optional() });
 
@@ -15,8 +15,9 @@ export default defineStep({
     "Otherwise `system`: the `Mail Replies` page and every page under it, then the person's own instructions from the Gmail app; " +
     "and `prompt`: the last 20 messages between the person and the sender, then the thread, each marked as mail. The thread alone when the mail went to more people than the person (`group`), " +
     "or when a reply would go to someone other than the sender (a Reply-To elsewhere): a reply is written from what its recipient has seen. " +
-    "Also whom a reply goes to (`to`: the message's Reply-To, or its sender) and whether the person has written to the sender before (their own sent mail, not a reply sent for them).",
-  effect: "read",
+    "Also whom a reply goes to (`to`: the message's Reply-To, or its sender) and whether the person has written to the sender before (their own sent mail, not a reply sent for them). " +
+    "Each time it sets out to write a reply it counts a try, which `answer` clears; a message tried 3 times with no outcome is handed to the person (Needs you) instead.",
+  effect: "write",
   input: z.object({ message: z.string().describe("The message's id: a message's `id` from `new`") }),
   output: z.object({
     go: z.boolean(),
@@ -46,6 +47,13 @@ export default defineStep({
     if (!pages.length) return none("the Mail Replies page is missing", m.threadId);
     const to = replyTargets(m);
     if (!to.length) return none("the message names no one to reply to", m.threadId);
+    // A message set out on three times with no outcome goes to the person
+    // (Needs you), so the mail after it is answered; else this is one more try.
+    if (triesOf(db, actor, cfg.message) >= TRIES) {
+      record(db, actor, { message: cfg.message, thread: m.threadId, did: "handoff", reason: COULDNT_WRITE });
+      return none(COULDNT_WRITE, m.threadId);
+    }
+    tried(db, actor, cfg.message);
     const mail = mailOf(m);
     const group = toSeveral(m, await ownAddressesOf(c, token));
     const sender = mail.from?.address;
