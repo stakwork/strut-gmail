@@ -1,0 +1,11 @@
+package: stadeum/gmail
+version: 0.1.0
+description: Read, search, draft and send your Gmail from workflows.
+requires:
+  # Each person's own token. Connect Google (stadeum's connect seam) writes
+  # it; Disconnect revokes it at Google and deletes it. The steps read only
+  # the person's own value (`secrets.own`), never a deployment's: a mailbox
+  # is whoever's token the run has, and there is none for the box.
+  optional: [GOOGLE_TOKEN]
+provides:
+  secrets: [GOOGLE_TOKEN]
