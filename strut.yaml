@@ -33,3 +33,10 @@ schedules:
 # starts runs as strut's own `job` workflow, in runs of its own.
 maxRunCostUsd:
   reply: 1
+job:
+  # The job agent's mail tools, as the job's person (plans/gmail.md §4.5):
+  # "tell Bob Tuesday works" is a job. A send asks first: it is a proposal
+  # the person accepts, with whom it goes to and the text on its card.
+  # The `Email` page under `Job` says how to use them.
+  tools: [search, read, draft, send]
+  approve: [send]
