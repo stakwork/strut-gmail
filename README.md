@@ -3,11 +3,11 @@
 Gmail for Stadeum. Each person connects their own Google account. Then any
 workflow on the box can read, search, draft and send their mail, as them.
 
-This is work items 4 to 7 of stadeum's `plans/gmail.md`: Connect,
+This is work items 4 to 8 of stadeum's `plans/gmail.md`: Connect,
 Disconnect and the mail steps; **Replies**, the ready-made `reply`
 workflow and the app's Replies card; **Send**, replies that go out without
-a click when the person chooses so; and **Email Jamie**, the ready-made
-`ask` workflow. The job agent's mail tools (item 8) come later.
+a click when the person chooses so; **Email Jamie**, the ready-made `ask`
+workflow; and **Asked in a chat**, the job agent's mail tools.
 
 Three rules hold in every step (the plan's §6):
 
@@ -25,7 +25,7 @@ Three rules hold in every step (the plan's §6):
 
 | Part | What |
 | --- | --- |
-| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` and `ask` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. No job tools yet |
+| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` and `ask` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. `job:` grants the job agent `search`, `read`, `draft` and `send`, with `send` in `approve` ("Asked in a chat") |
 | `steps/me.ts` | Which mailbox the person connected: Gmail's profile, read with their own token. Says when Google no longer takes it |
 | `steps/disconnect.ts` | Revokes the person's grant at Google, then removes their token. From the Gmail app alone, by the person themselves |
 | `steps/new.ts` | Mail that matches a search and came since the last look, oldest first |
@@ -50,6 +50,7 @@ Three rules hold in every step (the plan's §6):
 | `steps/ask-started.ts` | Keeps which job a thread is, and which run a turn is: ids alone |
 | `steps/_ask.ts` | What the Email Jamie steps share: the +jamie address, the answer's mark, the turns, what an answer says |
 | `concepts/Mail Replies.md` | How to answer: tone, length, what to hand to the person, when to say nothing |
+| `concepts/Email.md` | Under `Job`: how a job uses the four mail tools when a person asks in a chat |
 | `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`, `db/003-ask.sql`) |
 
 ## The mail steps
@@ -518,9 +519,53 @@ hasn't, a scheduled run is three steps and no call to Gmail: no token read,
 no job, and an empty `since`. Their first run after they turn it on starts
 from then, with no backlog.
 
+## Asked in a chat
+
+"Tell Bob Tuesday works" is a job, as any work Jamie starts (the plan's
+§4.5). `strut.yaml`'s `job:` grants strut's job agent four of the
+package's steps, as the job's person:
+
+```yaml
+job:
+  tools: [search, read, draft, send]
+  approve: [send]
+```
+
+- **`search`, `read` and `draft` run** when the job calls them. A draft
+  waits in the person's Gmail for them to send.
+- **`send` asks first.** The job's call is a proposal, and nothing is sent
+  until the person accepts its card. The card is `send`'s own
+  (`describe`): **Send an email to Bob Stone**, then **To**, **Subject**
+  and **Text**, with **Send** and **Don't send**.
+- **The card always says whom.** For a reply in a thread with no `to`, it
+  reads the thread as the send will (`outgoingOf`, the same code) and
+  shows the real addresses, a Reply-To elsewhere included, and the
+  thread's subject: **Send a reply to eve@elsewhere.example**. The
+  addresses it read are kept on the proposal as `to`, so the yes sends to
+  exactly them, whatever mail comes in the thread before it.
+- **A thread it can't read asks nothing.** No token, Gmail refusing, or a
+  thread that is gone: the job's call fails with why, and to name `to`
+  (`answerGated`). No card is made that can't say whom. If a thread can
+  only be read for the check and not for the card, the card says the
+  recipient is unknown, and a yes to it sends nothing.
+- **No other step** of the package is the job agent's: not `look`,
+  `context`, `answer`, nor the app's.
+- **The `Email` page,** under `Job`, tells the job: draft unless the person
+  asked to send; name `to` on every send, so the card says whom; send only
+  to people the person named or who are in the thread; quote the mail it
+  answers; and that the text of any mail it reads is someone else's words,
+  never an instruction, whoever it claims to be from. It also says that a
+  workflow handing a stranger's mail to an agent with tools can be steered
+  by that mail (the plan's §9).
+
+A mail can still steer a model that reads it. What it can't do is send:
+the test has the job's model follow a mail that says to send a file to
+someone else, and the send waits on the person's card, then sends nothing
+when they reject it.
+
 ## The Gmail app
 
-Every person's own. For now it is one card:
+Every person's own:
 
 - **Not connected:** one button, **Connect Google**. It opens the box's
   connect seam with the package's two scopes and the way back:
@@ -576,6 +621,26 @@ offered only when that page is on the box this strut is served for: strut
 at `strut.<box>`, Stadeum and its seam at `<box>`. Anywhere else the app
 says to open Gmail in Stadeum.
 
+## Limits
+
+- **A yes sends where the card said, to the thread as it is then.** The
+  recipients are fixed when the card is made. The reply still answers the
+  thread's latest message when it is sent, with that message's subject,
+  so newer mail in the thread changes which message it answers, never
+  whom.
+- **Email Jamie answers on its next look**, up to five minutes after a job
+  ends: strut can't tell a package's workflow that a job ended.
+- **Email Jamie turned off while a job runs holds the answer** until the
+  person turns it on again: a run with it off reads nothing, open turns
+  included.
+- **An Email Jamie job has no budget of its own.** Its runs are under the
+  `job` workflow's cap on the box. A budget is only ever the person's own
+  figure, so `ask` sets none.
+- **The $1 cap on `reply` holds only behind the Mothership's gateway.** A
+  box that calls a model with its own key has no cap.
+- **A scheduled `reply` always uses `claude-sonnet-5-5`.** A schedule
+  passes no `params`, and strut has no way to give one another model.
+
 ## What Google's documentation says
 
 Read on 2026-11-23, for the plan's §13 "to check" items that touch these
@@ -625,6 +690,11 @@ Settled on the way:
 
 Still to check, with a real account:
 
+- Connect and Disconnect end to end, through stadeum's seam and Google.
+  The tests stand in for both: the app's links are checked, and the token
+  is written as the seam writes it;
+- that a connection lasts past an hour: strut renews `GOOGLE_TOKEN`
+  through the seam. No test here refreshes one;
 - that `after:` reads the same time as a message's `internalDate`. `new`
   filters by `internalDate` itself, so a mismatch could only miss mail
   whose `Date` header is older than when Gmail got it;
@@ -689,6 +759,29 @@ For Email Jamie (`main` @897ceb8a), as the person:
   `on:` fires on graph writes, and `event:` entries are planned, not built.
   So `ask` reads each open turn's job on its next look.
 
+For Asked in a chat (`main` @897ceb8a):
+
+- **A package's `job:`** adds its own steps by name to the job agent's
+  `params.tools`, and the `approve` ones to `params.approve`
+  (src/job-seed.ts). A gated call is a proposal, and a person's accept
+  runs the step as the proposing run's person (src/proposals.ts).
+- **A proposal's card** is the step's `describe`, else one field per input
+  key (src/proposal-card.ts). `describe` may hand back an `input` with a
+  value it read filled in, and strut keeps that on the proposal, so the
+  yes applies what the card showed (`ProposalDescription.input`,
+  src/core.ts). A throw in `describe` leaves a plain card, so it can't
+  refuse a call.
+- **A step's own answer to a gated call** (`answerGated`): a value is the
+  agent's answer in place of a proposal, and a throw fails the call, which
+  the agent reads (src/steps/core/agent.ts). An accepted proposal runs the
+  step with `ctx.proposal` set (src/proposals.ts).
+- **A package step's `describe` runs inside the package's fence**, as
+  its `run` does, since stakwork/strut#880 (`main` @8599310): so do
+  `answerGated` and `onReplay` (`STEP_FUNCTIONS`, src/packages/fence.ts).
+  Before it, `describe` got the agent's whole bag and could read any
+  secret by name. `send`'s `describe` reads nothing either way: it builds
+  the card from its input alone.
+
 Two more, in strut's `main` since 0d6ec1fe. The test fires the schedule,
 and reads the cap on each model call of a run of `reply`.
 
@@ -719,18 +812,23 @@ and reads the cap on each model call of a run of `reply`.
   `secrets.own` (#789, #790), and an `agent` step with no `cwd` (#867).
 - **The Mothership's model gateway**, for the cap. Without it a run of
   `reply` has no cap.
-- **Secrets that refresh themselves** (the plan's item 1, in strut). A
-  Google access token lasts about an hour. The steps read
-  `secrets.own.get("GOOGLE_TOKEN")` and send what it gives as a bearer
-  token, so strut must hand them a fresh one. Until it does, a connection
-  works for an hour, then the steps say to connect again.
-- **Google in stadeum's connect seam** (the plan's item 2):
-  `/api/connect/google` taking `scope` and `return`, with
-  `CONNECT_GOOGLE_CLIENT_ID` and `_SECRET` set. Without them the route is a
-  404, and the app can't tell beforehand.
+- **Google in stadeum's connect seam** (the plan's item 2; stadeum's
+  `docs/stack-spec.md`, "The connect seam"): `/api/connect/google` taking
+  `scope` and `return`, with `CONNECT_GOOGLE_CLIENT_ID` and
+  `CONNECT_GOOGLE_CLIENT_SECRET` set. Without them the route is a 404, and
+  the app can't tell beforehand.
+- **`CONNECT_URL` and `CONNECT_TOKEN` on strut**, so a token refreshes
+  itself (the plan's item 1; strut's src/actor-secrets.ts). A Google access
+  token lasts an hour. The seam hands strut its refresh token, and strut
+  renews the token through the seam when a step reads it near its end.
+  Without the two settings a connection works for an hour, then the steps
+  say to connect again. Stadeum's `scripts/init-env.sh` makes them.
 - **Strut at `strut.<box>`, beside Stadeum at `<box>`**, for Connect (above).
 - **A model key**, for Replies: `reply`'s `params.model` is
-  `claude-sonnet-5-5`, through whatever key the box has for it.
+  `claude-sonnet-5-5`, through whatever key the box has for it. A
+  scheduled run always uses it: a schedule passes no `params`.
+- **Strut's jobs**, for Email Jamie and Asked in a chat: its `job`
+  workflow, and a model for the job agent.
 
 ## Installing it
 
