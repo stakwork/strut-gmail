@@ -34,6 +34,7 @@ Three rules hold in every step (the plan's §6):
 | `steps/send.ts` | The same, sent |
 | `steps/_gmail.ts` | What the steps share: the token, Gmail's API, a message's shape, a message to write |
 | `steps/_shape.ts` | A message's shape as the steps declare it |
+| `steps/look.ts` | Replies' look at the person's mail: the ids of what is new, under their search, or nothing when Replies is off |
 | `steps/context.ts` | What a reply to one message is written from, or why there is none ("Replies", below) |
 | `steps/answer.ts` | Acts on what the model wrote for one message, once: a draft, a handoff, or nothing |
 | `steps/settings.ts` | The person's choices for Replies: on or off, the search, their own instructions |
@@ -176,12 +177,12 @@ connects. Sending without a click is item 6.
 
 `workflows/reply.yaml`, run as the person, on their own mailbox:
 
-1. **`settings`**: whether Replies is on, and which mail it answers (`in:inbox
-   category:primary to:me` unless the person changed it). Off, it reads no
-   mail and hands back an empty `since`, so turning it on again starts
-   from then, with no backlog.
-2. **`new`** with that search, from `since`.
-3. For each message, oldest first, **`reply-one`**:
+1. **`look`** reads the person's choices. With Replies on, it looks for
+   mail under their search (`in:inbox category:primary to:me` unless they
+   changed it) from `since`, by `new`'s rule, and gives the new messages'
+   ids. Off, it reads no mail and hands back an empty `since`, so turning
+   it on again starts from then, with no backlog.
+2. For each message, oldest first, **`reply-one`**:
    - **`context`** stands down, and nothing else runs, for the mailbox's own
      mail, a list's or a machine's, one answered before, or one its thread
      has moved past: the person answered in it, or newer mail came.
@@ -196,7 +197,7 @@ connects. Sending without a click is item 6.
      - a **`handoff`** lists the thread under Needs you with its reason,
        beside the draft if the model wrote one;
      - **neither** is nothing. Most mail needs no answer.
-4. A last `pack` hands back `{ since }`.
+3. A last `pack` hands back `{ since }`.
 
 **The recipient is the step's:** the message's Reply-To, or its sender.
 The model never names anyone, and nothing is attached. `answer` records
@@ -205,6 +206,29 @@ rules are in the steps, so no search, page or instruction loosens them.
 
 `params.model` is `claude-sonnet-5-5`; any model the box has a key for
 will do.
+
+### What a run costs
+
+A schedule will run `reply` every five minutes for each person: 288 kept
+runs a day each. So a run that finds no new mail is as small as it can be:
+
+- **One call to Gmail**, its search, answered with no messages. None at
+  all with Replies off. `look` reads ids and times alone (`format=minimal`):
+  `context` reads each message whole, once, when there is one.
+- **Three steps:** `look`, a `foreach` over nothing, and the `pack`.
+- **Its output is `{ since }` alone**, and so is its summary's. A run's
+  summary stays after its log goes, so no summary ever holds mail: the
+  mail, the prompts and the model's answers are in the log alone.
+
+**`retain: 3d`** on both workflows: a run's log, with the mail and the
+prompts in it, is kept three days. The cursor needs no log (a fire's
+`last` is read from the summary). The drafts and Needs you need none
+either (the app's database has them). The log is for "why did it write
+this?", asked about a draft found after a weekend. A count would not do:
+`{ runs: N }` counts every person's runs of the workflow together.
+`reply-one` runs inside `reply`'s run and log, so its own `retain` is for
+a run of one message started by hand. On a box with an archive bucket,
+retention uploads a log before it removes it.
 
 ### What the model is given
 
@@ -262,9 +286,18 @@ Today a fire runs as its workflow's **owner** (strut's
 `docs/automations.md`, "Whom a fire runs as"), and the owner of
 `stadeum/gmail/reply` is whoever installed the package. So a person
 schedules a workflow of their own, as above, which runs `reply` as them.
-The plan's per-person schedule (`each: GOOGLE_TOKEN`, item 3) is being
-built in strut; once it is released, the package ships its own schedule
-and this wrapper is not needed.
+The plan's per-person schedule (`each: GOOGLE_TOKEN`, item 3) is
+stakwork/strut#871. Once a box's strut has it, the package ships:
+
+```yaml
+schedules:
+  - workflow: reply
+    trigger: { every: interval, minutes: 5 }
+    each: GOOGLE_TOKEN
+```
+
+and this wrapper is not needed. A strut without #871 refuses `each:`, so
+it is not in `strut.yaml` yet.
 
 ### What it keeps
 
@@ -434,7 +467,7 @@ Two things strut lacks, worked around nowhere in the package:
   of its YAML. The plan's `maxRunCostUsd: 1` for `reply` waits for a way
   to ship it.
 - **A package's schedule runs once, as its owner.** Per-person schedules
-  are item 3 ("Running `reply`", above).
+  are stakwork/strut#871 ("Running `reply`", above).
 
 ## What a box needs
 

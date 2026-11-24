@@ -36,7 +36,7 @@ const from = async <T>(path: string): Promise<T> => (await import(pathToFileURL(
 const HERE = resolve(".");
 const APP = "stadeum/gmail/gmail";
 const OTHER_APP = "acme/other/console";
-const STEPS = ["me", "disconnect", "new", "read", "search", "draft", "send", "context", "answer", "settings", "save", "waiting"].map((s) => `stadeum/gmail/${s}`);
+const STEPS = ["me", "disconnect", "new", "read", "search", "draft", "send", "look", "context", "answer", "settings", "save", "waiting"].map((s) => `stadeum/gmail/${s}`);
 const READONLY = SCOPES[0]!;
 const COMPOSE = SCOPES[1]!;
 
@@ -206,7 +206,9 @@ class FakeGoogle {
     let m = /^\/messages\/([^/]+)$/.exec(p);
     if (req.method === "GET" && m) {
       const one = box.messages.get(decodeURIComponent(m[1]!));
-      return one ? send(res, 200, resource(one)) : send(res, 404, { error: { code: 404, message: "Requested entity was not found." } });
+      if (!one) return send(res, 404, { error: { code: 404, message: "Requested entity was not found." } });
+      const { payload: _p, snippet: _s, ...minimal } = resource(one);
+      return send(res, 200, url.searchParams.get("format") === "minimal" ? minimal : resource(one));
     }
     m = /^\/threads\/([^/]+)$/.exec(p);
     if (req.method === "GET" && m) {
@@ -855,7 +857,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(pkg.provides?.secrets, ["GOOGLE_TOKEN"]);
     const registry = strut.getRegistry();
     const effects = Object.fromEntries(STEPS.map((s) => [s.split("/").pop(), registry[s]?.effect]));
-    assert.deepEqual(effects, { me: "read", disconnect: "write", new: "read", read: "read", search: "read", draft: "write", send: "write", context: "read", answer: "write", settings: "read", save: "write", waiting: "read" });
+    assert.deepEqual(effects, { me: "read", disconnect: "write", new: "read", read: "read", search: "read", draft: "write", send: "write", look: "read", context: "read", answer: "write", settings: "read", save: "write", waiting: "read" });
     const manifest = await strut.apps.manifestOf(APP);
     assert.deepEqual([...manifest.manifest.grants.steps].sort(), ["disconnect", "me", "save", "settings", "waiting"].map((s) => `stadeum/gmail/${s}`));
     assert.equal(manifest.manifest.grants.sqlite, false, "the page reaches its database through the steps alone");
@@ -1176,8 +1178,9 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.ok(pageOut.ref_id, "the Mail Replies page");
     assert.equal(String(pageOut.properties.docs).trim(), await PAGE_TEXT);
     const flow = await strut.workspace.getWorkflow("stadeum/gmail/reply");
-    assert.deepEqual(flow.steps.map((s: any) => s.type), ["settings", "if", "new", "foreach", "pack"]);
+    assert.deepEqual(flow.steps.map((s: any) => s.type), ["look", "foreach", "pack"]);
     const one = await strut.workspace.getWorkflow("stadeum/gmail/reply-one");
+    for (const f of [flow, one]) assert.match(JSON.stringify(f.retain), /3d|259200/, "logs kept three days");
     assert.deepEqual(one.steps.map((s: any) => s.type), ["context", "if", "agent", "answer"]);
     const agent = one.steps.find((s: any) => s.type === "agent").config;
     assert.deepEqual(agent.toolFilter, ["none"]);
@@ -1301,6 +1304,25 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const again = await step("stadeum/gmail/context", { message: R.bob!.id }, "fay");
     assert.deepEqual([again.go, again.why], [false, "it was answered before"]);
     assert.equal(fay.drafts.size, 4);
+  });
+
+  it("makes a run that finds no new mail one call to Gmail and three steps, and keeps no mail in any run's summary", async () => {
+    const n = calls.length;
+    const turns = model.turns.length;
+    const r = await strut.run("stadeum/gmail/reply", { since: faySince }, { actor: "fay", principal: "fay", params: { model: "maple/fake-replier" } });
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    faySince = (r.output as { since: string }).since;
+    assert.deepEqual(gmailCalls(n).map((c) => c.split("?")[0]), ["GET /messages"], "Gmail's search, and nothing else");
+    assert.equal(model.turns.length, turns);
+    const events = store.events.get([...store.events.keys()].find((k: string) => k.endsWith(r.runId))!) as Array<{ type: string; stepType?: string }>;
+    assert.deepEqual(events.filter((e) => e.type === "step.start").map((e) => e.stepType), ["stadeum/gmail/look", "foreach", "pack"]);
+    // What stays once `retain` takes the logs: each run's summary, whose output is `since` alone.
+    const ids: string[] = await store.listRuns("stadeum/gmail/reply");
+    const summaries = await Promise.all(ids.map((id) => store.getRunSummary("stadeum/gmail/reply", id)));
+    assert.equal(summaries.length, 4, "every run of reply so far, the one with eight new messages among them");
+    for (const x of summaries) assert.deepEqual(Object.keys((x as any).output ?? {}), ["since"]);
+    const kept = JSON.stringify(summaries);
+    for (const word of ["Tuesday", "invoice", "Bob", "@acme.example"]) assert.ok(!kept.includes(word), `no ${word} in a summary`);
   });
 
   it("writes over its own draft when a thread moves on; stands down when the person answered, or newer mail came", async () => {

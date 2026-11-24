@@ -443,17 +443,17 @@ async function inTurn<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R[]> 
   return out;
 }
 
-/** One message, whole; none when it is gone (deleted since it was listed). */
-export async function messageOf(ctx: Ctx, token: string, id: string): Promise<GMessage | undefined> {
-  const res = await gmail(ctx, token, `/messages/${encodeURIComponent(id)}`, { query: { format: "full" } });
+/** One message, whole, or (`minimal`) its id, thread, labels and time alone; none when it is gone (deleted since it was listed). */
+export async function messageOf(ctx: Ctx, token: string, id: string, format: "full" | "minimal" = "full"): Promise<GMessage | undefined> {
+  const res = await gmail(ctx, token, `/messages/${encodeURIComponent(id)}`, { query: { format } });
   if (res.status === 404) return undefined;
   if (!res.ok) throw refused(res, token, "show a message");
   return res.body as GMessage;
 }
 
-/** Messages by id, whole, those still there. */
-export async function messagesOf(ctx: Ctx, token: string, ids: string[]): Promise<GMessage[]> {
-  return (await inTurn(ids, (id) => messageOf(ctx, token, id))).filter((m): m is GMessage => !!m);
+/** Messages by id, those still there: whole, or `minimal`. */
+export async function messagesOf(ctx: Ctx, token: string, ids: string[], format: "full" | "minimal" = "full"): Promise<GMessage[]> {
+  return (await inTurn(ids, (id) => messageOf(ctx, token, id, format))).filter((m): m is GMessage => !!m);
 }
 
 /** The ids of the messages a Gmail search finds, up to `max`; `over` when there were more. */
@@ -480,8 +480,6 @@ export async function threadOf(ctx: Ctx, token: string, thread: string, format: 
   return [...messages].sort((a, b) => timeOf(a) - timeOf(b));
 }
 
-export const LISTED = LISTED_MAX;
-
 /** A person's search, with drafts left out at Gmail's end too: a draft is not mail yet. */
 export const withoutDrafts = (search: string): string => (search.trim() ? `(${search.trim()}) -in:drafts` : "-in:drafts");
 
@@ -501,6 +499,36 @@ export interface Cursor {
 export function writeCursor(c: Cursor): string {
   const seen = [...c.seen].map(([id, at]) => `${id}@${at}`).join(",");
   return seen ? `${c.after};${seen}` : `${c.after}`;
+}
+
+/**
+ * Mail that matches `search` and came after `since`, oldest first, at most
+ * `NEW_MAX`, with where this look stopped (`new`'s rule, its README
+ * section). Read `full` for the message's shape, or `minimal` (id, thread,
+ * labels, time) for a caller that reads each message again itself. With no
+ * `since`, no mail and no call to Gmail: only where to start.
+ */
+export async function lookSince(ctx: Ctx, token: string, search: string, since: string | undefined, format: "full" | "minimal"): Promise<{ messages: GMessage[]; since: string; more: boolean }> {
+  const now = Date.now();
+  if (!since?.trim()) return { messages: [], since: writeCursor({ after: now, seen: new Map() }), more: false };
+  const cur = readCursor(since);
+  // Gmail's search takes seconds; a second early, and each message's own time decides.
+  const q = `${withoutDrafts(search)} after:${Math.max(0, Math.floor(cur.after / 1000) - 1)}`;
+  const { ids, over } = await idsOf(ctx, token, q, LISTED_MAX);
+  if (over) throw new Error(`more than ${LISTED_MAX} messages match since the last look: narrow the search`);
+  const fetched = await messagesOf(ctx, token, ids.filter((id) => !cur.seen.has(id)), format);
+  const fresh = fetched.filter((m) => timeOf(m) >= cur.after).sort((a, b) => timeOf(a) - timeOf(b) || (a.id ?? "").localeCompare(b.id ?? ""));
+  const drafts = fresh.filter(isDraft);
+  const mail = fresh.filter((m) => !isDraft(m));
+  const handed = mail.slice(0, NEW_MAX);
+  const left = mail[NEW_MAX];
+  // It looks back a while each time, since Gmail's search can see new mail
+  // late; and never past mail it has not handed over yet.
+  const after = Math.max(cur.after, Math.min(now - LOOK_BACK_MS, left ? timeOf(left) : Infinity));
+  const seen = new Map<string, number>();
+  for (const [id, at] of cur.seen) if (at >= after) seen.set(id, at);
+  for (const m of [...handed, ...drafts]) if (timeOf(m) >= after) seen.set(m.id!, timeOf(m));
+  return { messages: handed, since: writeCursor({ after, seen }), more: !!left };
 }
 
 export function readCursor(raw: string): Cursor {

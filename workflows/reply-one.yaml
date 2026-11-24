@@ -3,8 +3,12 @@ description: One message for `reply`. Gather what a reply is written from, ask t
 # session. It reads what `context` gathered and gives back `reply`,
 # `handoff`, or neither; `answer` acts on it, to the recipient the step
 # works out. Its instructions are the pages'.
+#
+# Run by `reply`, it is a part of that run and its log. `retain` here is
+# for a run of one message started by hand.
+retain: 3d
 input:
-  message: { type: string, description: "The message's id, from `new`" }
+  message: { type: string, description: "The message's id, from `look`" }
 params:
   model: claude-sonnet-5-5
 steps:
