@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { addressesOf, asCtx, compose, createDraft, header, messageOf, needToken, ownAddressesOf, sendDraft, threadOf, updateDraft } from "./_gmail.js";
+import { addressesOf, asCtx, compose, createDraft, header, messageOf, needToken, sendDraft, threadOf, updateDraft } from "./_gmail.js";
 import { dbOf, draftIn, handledOf, holdBack, personOf, record, sentIdsOf, settingsOf, standDown, writtenTo, type ReplyCtx } from "./_replies.js";
 
 const address = z.object({ address: z.string(), name: z.string().optional() });
@@ -10,8 +10,8 @@ export default defineStep({
     "Act on what a model wrote for one message in the person's own mailbox, once. It stands down as `context` does (`stood-down` and `why`). " +
     "A `reply` is sent when the person's choice in the Gmail app allows it, and is a draft in the message's thread otherwise, in place of one it left there before: " +
     "Draft sends nothing; Send to people I've written to sends to a sender the person has written to before; Send to anyone sends to any sender. " +
-    "Under both, a reply is still a draft (`held` says why) when the mail went to more people than the person, when it would go to someone other than the sender, " +
-    "or when 3 replies already went out without a click in the thread since the person last wrote in it. " +
+    "Under both, a reply is still a draft (`held` says why) when it would go to someone other than the sender, " +
+    "or when 3 replies already went out without a click in the thread since the person last wrote in it. Mail to several people is answered to its sender alone. " +
     "A `handoff` is never sent: the thread goes under Needs you in the Gmail app with that reason, beside the draft if there was a reply too. Neither: nothing. " +
     "The recipient is the step's (the message's Reply-To, or its sender), never the model's, and nothing is attached. What it did is kept in the Gmail app's database; " +
     "a message it acted on before is `already`.",
@@ -65,7 +65,6 @@ export default defineStep({
       held = holdBack({
         m,
         thread: messages,
-        own: await ownAddressesOf(c, token),
         ours,
         choice,
         writtenBefore: choice === "written" && !!sender && (await writtenTo(c, token, sender, ours)),

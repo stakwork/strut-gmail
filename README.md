@@ -226,22 +226,24 @@ Under both Send choices, `answer` still leaves a draft and sends nothing
 when any of these holds. They are in the step (`holdBack`,
 `steps/_replies.ts`), and no page, instruction or mail changes them:
 
-1. **the mail went to more people than the person**: someone in To or Cc
-   besides the mailbox's own addresses (its send-as addresses, `+tag` or
-   not);
-2. **the reply would go to someone other than the sender**: a Reply-To
+1. **the reply would go to someone other than the sender**: a Reply-To
    elsewhere (ruling 13). A reply is written from what its recipient has already
    seen, and `context` gathers the earlier mail with the sender; with a
    Reply-To elsewhere it gathers the thread alone, and the person judges
    the draft;
-3. **three replies went out without a click in the thread** since the
+2. **three replies went out without a click in the thread** since the
    person last wrote in it themselves. Sending a draft from Gmail counts
    as the person writing;
-4. **the model handed the mail off**: the thread goes under Needs you,
+3. **the model handed the mail off**: the thread goes under Needs you,
    beside the draft.
 
 Mail from a list or a machine never gets this far: `context` and
 `answer` stand down for it.
+
+**Mail that went to several people** is sent as any other, under the
+person's choice (ruling 14). Its reply goes to the sender alone: the others
+it went to never get it. `context` writes it from the thread alone,
+without the earlier mail with the sender.
 
 - **Written to before** is the person's own sent mail to the sender
   (Gmail's `in:sent to:`), never a reply sent for them: `answer` keeps the
@@ -252,10 +254,10 @@ Mail from a list or a machine never gets this far: `context` and
   sends that draft (Gmail's `drafts.send`). So no stale draft stays in the
   thread, and a send that fails leaves the draft.
 - **The recipient stays the step's**, as for a draft: the message's
-  Reply-To, or its sender. Hold-back 2 means a sent reply only ever goes to
+  Reply-To, or its sender. Hold-back 1 means a sent reply only ever goes to
   the sender. The model names nobody and attaches nothing.
 
-Hold-back 2 is ruling 13 of stadeum's `plans/gmail.md`: a message whose
+Hold-back 1 is ruling 13 of stadeum's `plans/gmail.md`: a message whose
 Reply-To is not its sender always gets a draft. Without it, a message with
 a forged `From` of someone the person writes to, and a Reply-To of the
 forger's, would get a reply written from the person's mail with the real
@@ -304,7 +306,9 @@ it.
 
 `context` also says whom a reply goes to (`to`), whether the mail went to
 several people (`group`), and whether the person has written to the
-sender before (`writtenBefore`). Item 6's Send choices read those.
+sender before (`writtenBefore`), for a workflow to show. `answer` works out
+whom it sends to and whether the person wrote to them before again, from
+Gmail, so a workflow can't hand it others.
 
 ### Where the logic lives
 

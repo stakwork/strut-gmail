@@ -197,14 +197,22 @@ export function standDown(m: GMessage, thread: GMessage[]): string | undefined {
 /** How many replies may go out without a click in a thread before the person writes in it again. */
 export const SENT_IN_A_ROW = 3;
 
-/** A reply goes to the message's sender alone: not to a Reply-To elsewhere, nor to several. */
+/**
+ * A reply goes to the message's sender and nobody else: no Reply-To naming
+ * someone else, or several. Whoever else the mail went to never gets a reply
+ * (`replyTargets`).
+ */
 export function toSenderAlone(m: GMessage): boolean {
   const from = addressesOf(header(m.payload, "From"))[0];
   const to = replyTargets(m);
   return !!from && to.length === 1 && plainAddress(to[0]!.address) === plainAddress(from.address);
 }
 
-/** The mail went to more people than the person: someone besides the mailbox's own addresses in To or Cc. */
+/**
+ * The mail went to more people than the person: someone besides the
+ * mailbox's own addresses in To or Cc. `context` writes such a reply from the
+ * thread alone. It may still be sent, to the sender alone (ruling 14).
+ */
 export function toSeveral(m: GMessage, own: Set<string>): boolean {
   return [...addressesOf(header(m.payload, "To")), ...addressesOf(header(m.payload, "Cc"))].some((a) => !own.has(plainAddress(a.address)));
 }
@@ -214,17 +222,18 @@ export function toSeveral(m: GMessage, own: Set<string>): boolean {
  * none: it may go. Held in the step, so no page, instruction or mail
  * changes it. (A handoff is a draft too; `answer` says so itself.)
  *
- * 1. the mail went to more people than the person;
- * 2. the reply would go to someone other than its sender (ruling 13): a Reply-To
+ * 1. the reply would go to someone other than its sender (ruling 13): a Reply-To
  *    elsewhere, whom the reply was not written for (`context` reads the
  *    earlier mail with the sender);
- * 3. under `written`, the person has not written to the sender before;
- * 4. `SENT_IN_A_ROW` replies already went out without a click in the
+ * 2. under `written`, the person has not written to the sender before;
+ * 3. `SENT_IN_A_ROW` replies already went out without a click in the
  *    thread since the person last wrote in it themselves.
+ *
+ * Mail that went to several people is not held back (ruling 14): its reply
+ * goes to the sender alone, as any other.
  */
-export function holdBack(o: { m: GMessage; thread: GMessage[]; own: Set<string>; ours: Set<string>; choice: Choice; writtenBefore: boolean }): string | undefined {
+export function holdBack(o: { m: GMessage; thread: GMessage[]; ours: Set<string>; choice: Choice; writtenBefore: boolean }): string | undefined {
   if (o.choice === "draft") return undefined;
-  if (toSeveral(o.m, o.own)) return "the mail went to more people than the person";
   if (!toSenderAlone(o.m)) return "the reply would go to someone other than the sender";
   if (o.choice === "written" && !o.writtenBefore) return "the person hasn't written to the sender before";
   const mail = o.thread.filter((x) => !isDraft(x));

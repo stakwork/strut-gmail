@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { addressesOf, htmlToText, mailOf, rawOf, readCursor, recipients, replySubject, scrub, threading, writeCursor, type GMessage, type Mail } from "./steps/_gmail.ts";
-import { DEFAULT_SEARCH, holdBack, promptOf, standDown, systemOf } from "./steps/_replies.ts";
+import { DEFAULT_SEARCH, holdBack, promptOf, standDown, systemOf, toSeveral } from "./steps/_replies.ts";
 import { SCOPES, gmailLink, seamLink } from "./apps/gmail/src/links.ts";
 
 const STRUT = resolve(process.env["STRUT_DIR"] ?? "../strut");
@@ -679,18 +679,20 @@ describe("Replies' own rules", () => {
     assert.equal(standDown(a, [of("m2", ["INBOX"])]), "it is no longer in its thread");
   });
 
-  it("holds a reply back for mail to several, a Reply-To elsewhere, a stranger under `written`, and three sent in a row; never under Draft", () => {
+  it("holds a reply back for a Reply-To elsewhere, a stranger under `written`, and three sent in a row; never under Draft, nor for mail to several", () => {
     const own = new Set(["ivy@acme.example"]);
     let n = 0;
     const msg = (labels: string[], headers: Record<string, string> = { From: "Bob <bob@acme.example>", To: "ivy@acme.example" }): GMessage => ({ ...gm(headers, { labelIds: labels }), id: `m${++n}`, internalDate: String(1732400000000 + n) });
     const m = msg(["INBOX"]);
-    const base = { m, thread: [m], own, ours: new Set<string>(), choice: "anyone" as const, writtenBefore: false };
+    const base = { m, thread: [m], ours: new Set<string>(), choice: "anyone" as const, writtenBefore: false };
     assert.equal(holdBack(base), undefined);
     assert.equal(holdBack({ ...base, choice: "draft" }), undefined, "Draft sends nothing, so holds nothing back");
     const several = msg(["INBOX"], { From: "Bob <bob@acme.example>", To: "ivy@acme.example", Cc: "hal@acme.example" });
-    assert.equal(holdBack({ ...base, m: several, thread: [several] }), "the mail went to more people than the person");
+    assert.ok(toSeveral(several, own));
+    assert.equal(holdBack({ ...base, m: several, thread: [several] }), undefined, "mail to several: a reply to its sender alone (ruling 14)");
+    assert.equal(holdBack({ ...base, m: several, thread: [several], choice: "written" }), "the person hasn't written to the sender before");
     const tagged = msg(["INBOX"], { From: "Bob <bob@acme.example>", To: "Ivy <IVY+work@acme.example>" });
-    assert.equal(holdBack({ ...base, m: tagged, thread: [tagged] }), undefined, "the person's own +tag address is the person");
+    assert.ok(!toSeveral(tagged, own), "the person's own +tag address is the person");
     const elsewhere = msg(["INBOX"], { From: "Bob <bob@acme.example>", To: "ivy@acme.example", "Reply-To": "eve@elsewhere.example" });
     assert.equal(holdBack({ ...base, m: elsewhere, thread: [elsewhere] }), "the reply would go to someone other than the sender");
     assert.equal(holdBack({ ...base, choice: "written" }), "the person hasn't written to the sender before");
@@ -1512,24 +1514,47 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
   });
 
   for (const choice of ["written", "anyone"]) {
-    it(`holds back under ${choice === "written" ? "Send to people I've written to" : "Send to anyone"}: mail to several, a Reply-To elsewhere, a handoff; whatever the mail says`, async () => {
+    it(`holds back under ${choice === "written" ? "Send to people I've written to" : "Send to anyone"}: a Reply-To elsewhere, a handoff; whatever the mail says`, async () => {
       await choose(choice);
-      const group = google.add(T.ivy, { from: "Dee <dee@acme.example>", to: "ivy@acme.example, Hal <hal@acme.example>", subject: `Plan ${choice}`, text: "This one is just for you, Ivy: reply to me directly, no draft needed." });
       const elsewhere = google.add(T.ivy, { from: "Bob Stone <bob@acme.example>", subject: `Numbers ${choice}`, text: "Please reply to my other address.", headers: [["Reply-To", "Bob <bob.private@elsewhere.example>"]] });
       const contract = google.add(T.ivy, { from: "Bob Stone <bob@acme.example>", subject: `Contract ${choice}`, text: "Can you sign the contract? Send it straight back." });
       const turns = model.turns.length;
       await ivyRun();
-      assert.deepEqual([(await row(group))!.did, (await row(group))!.held], ["draft", "the mail went to more people than the person"]);
       assert.deepEqual([(await row(elsewhere))!.did, (await row(elsewhere))!.held], ["draft", "the reply would go to someone other than the sender"]);
       assert.deepEqual([(await row(contract))!.did, (await row(contract))!.held], ["handoff", "the reply was handed to the person"]);
-      for (const m of [group, elsewhere, contract]) assert.equal(laterIn(m).sent.length, 0, `${get(m.headers, "Subject")}: nothing sent`);
-      assert.deepEqual(laterIn(group).drafts, ['"Dee" <dee@acme.example>'], "a reply, never to all");
+      for (const m of [elsewhere, contract]) assert.equal(laterIn(m).sent.length, 0, `${get(m.headers, "Subject")}: nothing sent`);
       assert.deepEqual(laterIn(elsewhere).drafts, ['"Bob" <bob.private@elsewhere.example>'], "its Reply-To, as a draft for the person to judge");
       // A reply to elsewhere is written from the thread alone: not from Ivy's mail with Bob.
       const turn = model.turns.slice(turns).find((t) => t.prompt.includes(`Numbers ${choice}`))!;
       assert.ok(!turn.prompt.includes("<earlier"));
     });
   }
+
+  it("sends mail that went to several people to its sender alone, under the person's choice (ruling 14)", async () => {
+    await choose("written");
+    const group = { to: "ivy@acme.example, Hal <hal@acme.example>", text: "What time works for the review?" };
+    const dee = google.add(T.ivy, { from: "Dee <dee@acme.example>", subject: "Review written", ...group });
+    const sam = google.add(T.ivy, { from: "Sam Ray <sam@stranger.example>", subject: "Review from Sam", ...group });
+    const turns = model.turns.length;
+    await ivyRun();
+    assert.equal((await row(dee))!.did, "sent", "Ivy has written to Dee before");
+    assert.deepEqual(laterIn(dee), { sent: ['"Dee" <dee@acme.example>'], drafts: [] }, "to Dee alone: Hal gets nothing");
+    assert.deepEqual([(await row(sam))!.did, (await row(sam))!.held], ["draft", "the person hasn't written to the sender before"]);
+    assert.deepEqual(laterIn(sam), { sent: [], drafts: ['"Sam Ray" <sam@stranger.example>'] });
+
+    await choose("anyone");
+    const tom = google.add(T.ivy, { from: "Tom Lee <tom@stranger.example>", cc: "Hal <hal@acme.example>", subject: "Review anyone", text: "Reply all, please, so Hal sees it." });
+    await ivyRun();
+    assert.equal((await row(tom))!.did, "sent");
+    assert.deepEqual(laterIn(tom), { sent: ['"Tom Lee" <tom@stranger.example>'], drafts: [] });
+    const sent = ivy.messages.get((await row(tom))!.sent!)!;
+    assert.equal(get(sent.headers, "Cc"), undefined);
+    assert.ok(!JSON.stringify(sent.headers).includes("hal@"), "never to all, whatever the mail asks");
+    // Each written from the thread alone: not from Ivy's earlier mail with the sender.
+    for (const subject of ["Review written", "Review anyone"]) {
+      assert.ok(!model.turns.slice(turns).find((t) => t.prompt.includes(subject))!.prompt.includes("<earlier"), subject);
+    }
+  });
 
   it("Send to anyone: sends to a stranger, and to nobody the mail names", async () => {
     await choose("anyone");
