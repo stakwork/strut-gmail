@@ -910,7 +910,8 @@ STRUT_DIR=../strut npm test
 ```
 
 `STRUT_DIR` is a strut checkout with its install (`yarn install
---frozen-lockfile --ignore-scripts`, and the same in `kit/`). With no built
+--frozen-lockfile --ignore-scripts`, and the same in `kit/`), on the Node
+its `.nvmrc` names. With no built
 `kit/vendor` there, the test builds the kit's vendor layer itself; a stale
 one fails the app's build. `.github/workflows/checks.yml` runs it on every
 pull request and push to `main`, against strut's `main`.
