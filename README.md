@@ -3,10 +3,11 @@
 Gmail for Stadeum. Each person connects their own Google account. Then any
 workflow on the box can read, search, draft and send their mail, as them.
 
-This is work items 4 and 5 of stadeum's `plans/gmail.md`: Connect,
-Disconnect and the mail steps; then **Replies** in Draft, the ready-made
-`reply` workflow and the app's Replies card. Sending without a click (item
-6), `ask` (item 7) and the job agent's mail tools (item 8) come later.
+This is work items 4 to 6 of stadeum's `plans/gmail.md`: Connect,
+Disconnect and the mail steps; **Replies**, the ready-made `reply`
+workflow and the app's Replies card; and **Send**, replies that go out
+without a click when the person chooses so. `ask` (item 7) and the job
+agent's mail tools (item 8) come later.
 
 Three rules hold in every step (the plan's §6):
 
@@ -36,15 +37,15 @@ Three rules hold in every step (the plan's §6):
 | `steps/_shape.ts` | A message's shape as the steps declare it |
 | `steps/look.ts` | Replies' look at the person's mail: the ids of what is new, under their search, or nothing when Replies is off |
 | `steps/context.ts` | What a reply to one message is written from, or why there is none ("Replies", below) |
-| `steps/answer.ts` | Acts on what the model wrote for one message, once: a draft, a handoff, or nothing |
-| `steps/settings.ts` | The person's choices for Replies: on or off, the search, their own instructions |
+| `steps/answer.ts` | Acts on what the model wrote for one message, once: sent when the person's choice allows it, else a draft; a handoff; or nothing |
+| `steps/settings.ts` | The person's choices for Replies: on or off, who gets a reply without a click, the search, their own instructions |
 | `steps/save.ts` | Changes those choices. From the Gmail app alone, by the person themselves |
-| `steps/waiting.ts` | The drafts Replies left that are still in Gmail, and the threads under Needs you |
+| `steps/waiting.ts` | The drafts Replies left that are still in Gmail, the threads under Needs you, and what was sent for the person |
 | `steps/_replies.ts` | What the Replies steps share: the person, the app's database, the pages, when not to answer, how the mail is shown |
 | `workflows/reply.yaml` | **`reply`**: the person's new mail, one message at a time |
 | `workflows/reply-one.yaml` | One message: `context`, the model, `answer` |
 | `concepts/Mail Replies.md` | How to answer: tone, length, what to hand to the person, when to say nothing |
-| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`) |
+| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`) |
 
 ## The mail steps
 
@@ -169,9 +170,10 @@ with their token. Strut needs nothing new for this.
 
 ## Replies
 
-**Replies** answers a person's mail with drafts in their Gmail. They edit
-and send them there. It is on, in Draft, from the moment a person
-connects. Sending without a click is item 6.
+**Replies** answers a person's mail. It is on, in Draft, from the moment
+a person connects: every reply is a draft in their Gmail, which they edit
+and send there. They may choose instead to have some replies sent without
+a click ("Send", below).
 
 ### `reply`
 
@@ -192,8 +194,10 @@ connects. Sending without a click is item 6.
      `context.system` and its prompt `context.prompt`. The YAML holds no
      words of its own.
    - **`answer`** stands down as `context` does. Otherwise:
-     - a **`reply`** becomes a draft in the thread, in place of the one it
-       left there before (Gmail's `drafts.update` keeps the draft's id);
+     - a **`reply`** is sent when the person's choice allows it ("Send",
+       below). Otherwise it is a draft in the thread, in place of the one
+       it left there before (Gmail's `drafts.update` keeps the draft's
+       id);
      - a **`handoff`** lists the thread under Needs you with its reason,
        beside the draft if the model wrote one;
      - **neither** is nothing. Most mail needs no answer.
@@ -206,6 +210,55 @@ rules are in the steps, so no search, page or instruction loosens them.
 
 `params.model` is `claude-sonnet-5-5`; any model the box has a key for
 will do.
+
+### Send
+
+The person picks who gets a reply without a click (the plan's §4.3,
+ruling 8):
+
+| Choice | Sent to | Everyone else |
+| --- | --- | --- |
+| **Draft** (the default) | Nobody | A draft |
+| **Send to people I've written to** | A sender the person has written to before | A draft |
+| **Send to anyone** | Any sender | A draft |
+
+Under both Send choices, `answer` still leaves a draft and sends nothing
+when any of these holds. They are in the step (`holdBack`,
+`steps/_replies.ts`), and no page, instruction or mail changes them:
+
+1. **the mail went to more people than the person**: someone in To or Cc
+   besides the mailbox's own addresses (its send-as addresses, `+tag` or
+   not);
+2. **the reply would go to someone other than the sender**: a Reply-To
+   elsewhere. A reply is written from what its recipient has already
+   seen, and `context` gathers the earlier mail with the sender; with a
+   Reply-To elsewhere it gathers the thread alone, and the person judges
+   the draft;
+3. **three replies went out without a click in the thread** since the
+   person last wrote in it themselves. Sending a draft from Gmail counts
+   as the person writing;
+4. **the model handed the mail off**: the thread goes under Needs you,
+   beside the draft.
+
+Mail from a list or a machine never gets this far: `context` and
+`answer` stand down for it.
+
+- **Written to before** is the person's own sent mail to the sender
+  (Gmail's `in:sent to:`), never a reply sent for them: `answer` keeps the
+  id of every message it sent, and leaves those out. So one reply sent to
+  a stranger under Send to anyone doesn't make them someone the person has
+  written to.
+- **Sending** writes the draft first, in place of any earlier one, then
+  sends that draft (Gmail's `drafts.send`). So no stale draft stays in the
+  thread, and a send that fails leaves the draft.
+- **The recipient stays the step's**, as for a draft: the message's
+  Reply-To, or its sender. Hold-back 2 means a sent reply only ever goes to
+  the sender. The model names nobody and attaches nothing.
+
+Hold-back 2 is this package's addition to the plan's three. Without it, a
+message with a forged `From` of someone the person writes to, and a
+Reply-To of the forger's, would get a reply written from the person's
+mail with the real sender, sent to the forger.
 
 ### What a run costs
 
@@ -305,13 +358,17 @@ release has it.
 The Gmail app's own SQLite (`apps/gmail/db/001-replies.sql`), one file for
 the app, every row keyed by the person's strut actor:
 
-- `people`: whether Replies is on, the search, the person's instructions;
+- `people`: whether Replies is on, who gets a reply without a click, the
+  search, the person's instructions;
 - `handled`: for each message `answer` acted on, its id and thread, what
-  it did (`draft`, `handoff`, `nothing`, `stood-down`), the draft's id while
-  it is the thread's latest, and a handoff's reason.
+  it did (`draft`, `sent`, `handoff`, `nothing`, `stood-down`), the draft's
+  id while it is the thread's latest, the id of the message it sent, a
+  handoff's reason, and why a reply that could have been sent was held
+  back.
 
 No mail, and no address. The page reads each Needs you row's sender and
-subject from Gmail when it shows them, with the person's own token. The
+subject, and each Sent for you row's sender and first line, from Gmail
+when it shows them, with the person's own token. The
 steps open the file with `ctx.services.appDb.open("stadeum/gmail/gmail")`,
 from a page's call or a run no page started alike.
 
@@ -342,6 +399,10 @@ Every person's own. For now it is one card:
 
 - A switch, **Replies**, with "Jamie answers your mail" under it. On, it
   shows:
+  - who gets a reply without a click, a dropdown: **Draft**, **Send to
+    people I've written to**, **Send to anyone**. Beside it, a few words
+    that change with the choice: "You send each one in Gmail", "Everyone
+    else gets a draft", "Never to lists or machines";
   - **N drafts waiting**, the drafts Replies left that are still in Gmail,
     with **Open Gmail**, which opens Gmail's drafts in the connected
     account;
@@ -353,6 +414,10 @@ Every person's own. For now it is one card:
 - **Needs you:** the threads handed to the person, newest first, each with
   the sender, the subject and the reason. A row opens its thread in Gmail.
   A thread leaves the list once the person writes in it.
+- **Sent for you:** what went out without a click, newest first, each with
+  the sender it answered and the reply's first line. A row opens its
+  thread in Gmail. "Nothing yet" when there is none, as under Draft. A
+  person who goes back to Draft still sees what was sent before.
 
 The page reads and changes these through `settings`, `save` and `waiting`
 alone. It is granted no SQL (`grants.sqlite: false`).
