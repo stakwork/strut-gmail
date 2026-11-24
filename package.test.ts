@@ -30,7 +30,7 @@ import { DEFAULT_SEARCH, holdBack, promptOf, standDown, systemOf, toSeveral } fr
 import { SCOPES, gmailLink, seamLink } from "./apps/gmail/src/links.ts";
 
 const STRUT = resolve(process.env["STRUT_DIR"] ?? "../strut");
-for (const k of ["GOOGLE_TOKEN", "STRUT_GIT_LOCAL"]) delete process.env[k];
+for (const k of ["GOOGLE_TOKEN", "STRUT_GIT_LOCAL", "STRUT_RUN_MAX_COST_USD", "STRUT_MOTHERSHIP_REQUIRED"]) delete process.env[k];
 const from = async <T>(path: string): Promise<T> => (await import(pathToFileURL(join(STRUT, "src", path)).href)) as T;
 
 const HERE = resolve(".");
@@ -56,6 +56,8 @@ const T = {
   gone: `ya29.${hex(24)}`, // one Google no longer takes
   fay: `ya29.${hex(24)}`, // a member's, for Replies
   ivy: `ya29.${hex(24)}`, // a member's, for Send
+  gil: `ya29.${hex(24)}`, // a member's, whose model calls a gateway bills
+  hal: `ya29.${hex(24)}`, // a member's, for the schedule
   deployment: `ya29.${hex(24)}`, // the deployment's: no step may send it
 };
 const ALL_TOKENS = Object.values(T);
@@ -728,6 +730,10 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
   const calls: Call[] = [];
   const google = new FakeGoogle();
   const model = new FakeModel();
+  /** The box's model gateway, for a person the Mothership bills: each call's run, and the cap its run link carries. */
+  const capped: Array<{ run: string; usd: number }> = [];
+  let gateway: Server;
+  let DEFAULT_CAP: number;
   const seen: string[] = [];
   const logged: string[] = [];
   const consoleWas = { ...console };
@@ -809,12 +815,36 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     }
     await google.start();
     await model.start();
+    // The box's gateway: it checks each call's run link with the org's key,
+    // notes the cap the link carries, and answers as the model does.
+    const gatekey = await import(pathToFileURL(join(STRUT, "node_modules", "gatekey", "dist", "index.js")).href);
+    const orgPriv = randomBytes(32);
+    orgPriv[0] = 1;
+    const policy = { type: "single", key: { alg: "ecdsa-secp256k1-sha256", key: gatekey.bytesToHex(gatekey.ecdsaPublicKey(orgPriv)) } };
+    gateway = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const c of req) chunks.push(c as Buffer);
+      try {
+        const claims = gatekey.verify(String(req.headers["x-macaroon"]), policy, new Date());
+        capped.push({ run: claims.run_id, usd: claims.chain[2].max_cost_usd });
+      } catch (e) {
+        res.writeHead(401, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: `the gateway refused the run link: ${(e as Error).message}` } }));
+      }
+      const up = await fetch(`${model.base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: Buffer.concat(chunks) });
+      res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" });
+      res.end(Buffer.from(await up.arrayBuffer()));
+    });
+    await new Promise<void>((ok) => gateway.listen(0, "127.0.0.1", ok));
+    const gatewayAt = gateway.address();
     fay = google.mailbox(T.fay, "fay@acme.example", "Fay Moss");
     ivy = google.mailbox(T.ivy, "ivy@acme.example", "Ivy Chen");
     ada = google.mailbox(T.ada, "ada@acme.example", "Ada Lovelace");
     bea = google.mailbox(T.bea, "bea@acme.example", "Bea Smith", [READONLY]);
     google.mailbox(T.dan, "dan@acme.example", "Dan");
     google.stubborn.add(T.dan);
+    google.mailbox(T.gil, "gil@acme.example", "Gil Park");
+    google.mailbox(T.hal, "hal@acme.example", "Hal Reed");
     google.mailbox(T.deployment, "the-box@acme.example", "The Box");
 
     root = await mkdtemp(join(tmpdir(), "strut-gmail-test-"));
@@ -825,6 +855,14 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const { PRIVATE_NAMESPACE } = await from<any>("graph/ladybug/namespaces.ts");
     const { GraphWorkspaceStore } = await from<any>("graph/workspace-store.ts");
     const { kitForTests } = await from<any>("test-util/app-kit.ts");
+    const { createMothership } = await from<any>("mothership.ts");
+    const { MemorySecretStore } = await from<any>("secret-store.ts");
+    const { mintDelegation } = await from<any>("test-util/mint-delegation.ts");
+    DEFAULT_CAP = (await from<any>("run-cap.ts")).DEFAULT_RUN_CAP_USD;
+    // The Mothership bills a person's model calls through the box's gateway
+    // when it holds their authorization: here, gil's alone. Everyone
+    // else's go to the model directly.
+    const mothership = createMothership({ dataDir: join(root, "mothership"), store: new MemorySecretStore() });
     tools = await from<any>("apps/tools.ts");
     STEP_RUN = tools.STEP_RUN_TOOL;
     appIdentity = (await from<any>("auth.ts")).appIdentity;
@@ -846,6 +884,8 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
       serveUi: false,
       enableChat: false,
       autoResume: false,
+      // The clock is the test's: a schedule fires when a test fires it.
+      scheduler: false,
       orchestrator: false,
       builder: false,
       systemWorkflows: false,
@@ -861,6 +901,16 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
       worker: false,
       git: { local: false },
       services: { http: httpCapability(toFake) },
+      llmAuth: mothership.llmAuth,
+    });
+    mothership.mount(strut);
+    const gil = mintDelegation({ actor: "gil", orgPriv, userPriv: randomBytes(32) });
+    await mothership.delegations.put("gil", {
+      macaroon: gil.macaroon,
+      delegationId: gil.delegationId,
+      apiKey: "gateway-key",
+      baseUrl: `http://127.0.0.1:${typeof gatewayAt === "object" && gatewayAt ? gatewayAt.port : 0}`,
+      exp: gil.exp,
     });
     await install(HERE);
     const other = join(root, "acme-other");
@@ -884,10 +934,11 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     await strut?.close?.().catch(() => {});
     await google.stop();
     await model.stop();
+    await new Promise((ok) => gateway?.close(ok));
     await rm(root, { recursive: true, force: true, maxRetries: 5 });
   });
 
-  it("installs whole: the token it provides, its steps, its app, and no schedule", async () => {
+  it("installs whole: the token it provides, its steps, its app, a schedule of `reply` for each person, and its cap", async () => {
     const { packages } = await (await strut.app.request("/packages")).json();
     const pkg = packages.find((p: any) => p.package === "stadeum/gmail");
     assert.ok(pkg, "installed");
@@ -901,7 +952,95 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.equal(manifest.manifest.grants.sqlite, false, "the page reaches its database through the steps alone");
     assert.equal(manifest.manifest.admin, undefined, "everyone's app");
     const { automations } = await (await strut.app.request("/automations")).json();
-    assert.deepEqual(automations.filter((a: any) => a.package === "stadeum/gmail"), [], "no schedule yet");
+    const shipped = automations.filter((a: any) => a.package === "stadeum/gmail");
+    assert.deepEqual(
+      shipped.map((a: any) => [a.name, a.workflow, a.trigger.every, a.trigger.minutes, a.input, a.each, a.enabled]),
+      [["reply", "stadeum/gmail/reply", "interval", 5, { since: "{{ last.output.since }}" }, "GOOGLE_TOKEN", true]],
+    );
+    const listed = (await (await strut.app.request("/workflows")).json()) as any[];
+    const cap = (name: string) => listed.find((w) => w.name === name)?.packageMaxRunCostUsd;
+    assert.deepEqual([cap("stadeum/gmail/reply"), cap("stadeum/gmail/reply-one")], [1, undefined], "a run of reply, its reply-one runs inside it");
+  });
+
+  /** A run the scheduler started, once it has ended: how it started, and its summary. */
+  const ended = async (workflow: string, runId: string) => {
+    for (let i = 0; i < 1000; i++) {
+      const summary = await store.getRunSummary(workflow, runId);
+      if (summary) {
+        seen.push(JSON.stringify(summary));
+        const start = (await store.getRunEvents(workflow, runId)).find((e: any) => e.type === "run.start");
+        return { runId, summary, start };
+      }
+      await new Promise((ok) => setTimeout(ok, 10));
+    }
+    throw new Error(`${workflow} ${runId} never ended`);
+  };
+
+  it("runs `reply` for each person who holds their own GOOGLE_TOKEN, as them, from where their last run stopped; for nobody else", async () => {
+    const REPLY = "stadeum/gmail/reply";
+    const view = async () => ((await (await strut.app.request("/automations")).json()).automations as any[]).find((a) => a.package === "stadeum/gmail");
+    const fire = async () => {
+      const res = await strut.app.request(`/workflows/${encodeURIComponent(REPLY)}/automations/${(await view()).id}/fire`, { method: "POST" });
+      const body = await res.json();
+      assert.equal(res.status, 202, JSON.stringify(body));
+      return Promise.all((body.runIds as string[]).map((runId) => ended(REPLY, runId)));
+    };
+    assert.equal((await view()).people, 0, "the deployment's GOOGLE_TOKEN is nobody's");
+    assert.deepEqual(await fire(), [], "so a fire runs nothing for it");
+
+    await seam("gil", T.gil);
+    await seam("hal", T.hal);
+    const other = await strut.app.request("/actors/ivy/secrets/OTHER_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "x" }) });
+    assert.equal(other.status, 200, await other.text());
+    assert.equal((await view()).people, 2);
+
+    const first = await fire();
+    const who = (runs: typeof first) => runs.map((r) => [r.start.principal, r.start.actor, r.start.origin, r.summary.status]).sort();
+    assert.deepEqual(who(first), [["gil", undefined, "schedule", "success"], ["hal", undefined, "schedule", "success"]], "as each of them, and nobody else");
+    for (const r of first) assert.match(r.summary.output.since, /^\d+$/, "a first run hands back where to start, with no backlog");
+
+    const n = calls.length;
+    const second = await fire();
+    assert.deepEqual(who(second), who(first));
+    assert.deepEqual([...new Set(since(n).map((c) => c.auth))].sort(), [`Bearer ${T.gil}`, `Bearer ${T.hal}`].sort(), "each on their own mailbox, with their own token");
+    for (const r of second) {
+      const last = first.find((f) => f.start.principal === r.start.principal)!;
+      assert.equal(r.start.input.since, last.summary.output.since, "each starts where their own last run stopped");
+    }
+
+    // A day on, each run's log is gone; its summary stays, with `since` alone.
+    const { createRetention } = await from<any>("retention.ts");
+    const dayOn = createRetention({ store, workspace: strut.workspace, now: () => Date.now() + 25 * 3_600_000 });
+    await dayOn.sweep();
+    for (const r of [...first, ...second]) {
+      const s = await store.getRunSummary(REPLY, r.runId);
+      assert.ok(s.parts?.log?.evictedAt, "its log dropped after a day");
+      assert.deepEqual(Object.keys(s.output), ["since"]);
+    }
+  });
+
+  it("holds a run of `reply` to its $1 cap, every message it answers included; a person's own workflow around it has the box's cap", async () => {
+    const run = async (name: string, since: string) => {
+      const r = await strut.run(name, { since }, { actor: "gil", principal: "gil", params: { model: "maple/fake-replier" } });
+      seen.push(JSON.stringify(r));
+      assert.equal(r.status, "success", JSON.stringify(r.error));
+      return { runId: r.runId as string, since: ((r.output as any)?.replies ?? r.output).since as string };
+    };
+    const start = await run("stadeum/gmail/reply", "");
+    google.add(T.gil, { from: "Bob Stone <bob@acme.example>", subject: "Lunch", text: "Lunch on Thursday?" });
+    google.add(T.gil, { from: "Cy Young <cy@acme.example>", subject: "Notes", text: "Are the notes ready?" });
+    const turns = model.turns.length;
+    const replied = await run("stadeum/gmail/reply", start.since);
+    assert.equal(model.turns.length, turns + 2, "a model call for each message");
+    assert.deepEqual(capped.filter((c) => c.run === replied.runId).map((c) => c.usd), [1, 1], "each under reply's cap");
+
+    await strut.workspace.publishWorkflowByContent(
+      "test/gils-replies",
+      ['input:', '  since: { type: string, default: "" }', "steps:", "  - id: replies", "    type: subflow", "    config:", "      workflow: stadeum/gmail/reply", '      input: { since: "{{ input.since }}" }', '      params: { model: "maple/fake-replier" }', ""].join("\n"),
+    );
+    google.add(T.gil, { from: "Bob Stone <bob@acme.example>", subject: "Coffee", text: "Coffee on Friday?" });
+    const own = await run("test/gils-replies", replied.since);
+    assert.deepEqual(capped.filter((c) => c.run === own.runId).map((c) => c.usd), [DEFAULT_CAP], "the cap of the workflow the run is");
   });
 
   it("says a person with no token of their own is not connected, though the deployment has one, and asks Google nothing", async () => {
@@ -1357,7 +1496,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     // What stays once `retain` takes the logs: each run's summary, whose output is `since` alone.
     const ids: string[] = await store.listRuns("stadeum/gmail/reply");
     const summaries = await Promise.all(ids.map((id) => store.getRunSummary("stadeum/gmail/reply", id)));
-    assert.equal(summaries.length, 4, "every run of reply so far, the one with eight new messages among them");
+    assert.equal(summaries.filter((x: any) => x.principal === "fay").length, 4, "every run of fay's so far, the one with eight new messages among them");
     for (const x of summaries) assert.deepEqual(Object.keys((x as any).output ?? {}), ["since"]);
     const kept = JSON.stringify(summaries);
     for (const word of ["Tuesday", "invoice", "Bob", "@acme.example"]) assert.ok(!kept.includes(word), `no ${word} in a summary`);
@@ -1416,10 +1555,9 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.equal(model.turns.length, n + 1);
   });
 
-  it("runs from a workflow of the person's own, which a schedule of theirs runs as them, handing `since` on", async () => {
-    // A fire runs as its workflow's owner, so a person schedules a workflow
-    // of their own around `reply` until strut runs a package's schedule for
-    // each person (README, "Running reply").
+  it("runs from a workflow of the person's own too, handing `since` on", async () => {
+    // The package's schedule runs `reply` for each person; a person may also
+    // run it inside a workflow of their own (README, "Running reply").
     await strut.workspace.publishWorkflowByContent(
       "test/fays-replies",
       [
@@ -1621,9 +1759,9 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const db = await strut.services.appDb.open(APP);
     const people = db.prepare("SELECT * FROM people").all();
     const handled = db.prepare("SELECT * FROM handled").all() as Array<Record<string, unknown>>;
-    assert.deepEqual(people.map((p: any) => p.actor).sort(), ["fay", "ivy"]);
+    assert.deepEqual(people.map((p: any) => p.actor).sort(), ["fay", "ivy"], "the two who changed a choice");
     assert.ok(handled.length >= 8);
-    assert.deepEqual([...new Set(handled.map((h) => h["actor"]))].sort(), ["fay", "ivy"]);
+    assert.deepEqual([...new Set(handled.map((h) => h["actor"]))].sort(), ["fay", "gil", "ivy"], "the three whose mail Replies answered");
     const kept = JSON.stringify(handled);
     for (const word of ["@", "Tuesday", "invoice-42", "Lunch", "Bob"]) assert.ok(!kept.includes(word), `no ${word} kept`);
     assert.deepEqual(Object.keys(handled[0]!).sort(), ["actor", "at", "did", "draft", "held", "message", "reason", "sent", "thread"]);
