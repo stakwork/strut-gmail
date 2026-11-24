@@ -536,9 +536,18 @@ job:
 - **`send` asks first.** The job's call is a proposal, and nothing is sent
   until the person accepts its card. The card is `send`'s own
   (`describe`): **Send an email to Bob Stone**, then **To**, **Subject**
-  and **Text**, with **Send** and **Don't send**. For a reply in a thread
-  with no `to`, To says the step's rule: whoever sent the thread's latest
-  message, or its Reply-To.
+  and **Text**, with **Send** and **Don't send**.
+- **The card always says whom.** For a reply in a thread with no `to`, it
+  reads the thread as the send will (`outgoingOf`, the same code) and
+  shows the real addresses, a Reply-To elsewhere included, and the
+  thread's subject: **Send a reply to eve@elsewhere.example**. The
+  addresses it read are kept on the proposal as `to`, so the yes sends to
+  exactly them, whatever mail comes in the thread before it.
+- **A thread it can't read asks nothing.** No token, Gmail refusing, or a
+  thread that is gone: the job's call fails with why, and to name `to`
+  (`answerGated`). No card is made that can't say whom. If a thread can
+  only be read for the check and not for the card, the card says the
+  recipient is unknown, and a yes to it sends nothing.
 - **No other step** of the package is the job agent's: not `look`,
   `context`, `answer`, nor the app's.
 - **The `Email` page,** under `Job`, tells the job: draft unless the person
@@ -611,6 +620,26 @@ hands an app can be named by any page that frames strut. So Connect is
 offered only when that page is on the box this strut is served for: strut
 at `strut.<box>`, Stadeum and its seam at `<box>`. Anywhere else the app
 says to open Gmail in Stadeum.
+
+## Limits
+
+- **A yes sends where the card said, to the thread as it is then.** The
+  recipients are fixed when the card is made. The reply still answers the
+  thread's latest message when it is sent, with that message's subject,
+  so newer mail in the thread changes which message it answers, never
+  whom.
+- **Email Jamie answers on its next look**, up to five minutes after a job
+  ends: strut can't tell a package's workflow that a job ended.
+- **Email Jamie turned off while a job runs holds the answer** until the
+  person turns it on again: a run with it off reads nothing, open turns
+  included.
+- **An Email Jamie job has no budget of its own.** Its runs are under the
+  `job` workflow's cap on the box. A budget is only ever the person's own
+  figure, so `ask` sets none.
+- **The $1 cap on `reply` holds only behind the Mothership's gateway.** A
+  box that calls a model with its own key has no cap.
+- **A scheduled `reply` always uses `claude-sonnet-5-5`.** A schedule
+  passes no `params`, and strut has no way to give one another model.
 
 ## What Google's documentation says
 
@@ -737,7 +766,15 @@ For Asked in a chat (`main` @897ceb8a):
   (src/job-seed.ts). A gated call is a proposal, and a person's accept
   runs the step as the proposing run's person (src/proposals.ts).
 - **A proposal's card** is the step's `describe`, else one field per input
-  key (src/proposal-card.ts).
+  key (src/proposal-card.ts). `describe` may hand back an `input` with a
+  value it read filled in, and strut keeps that on the proposal, so the
+  yes applies what the card showed (`ProposalDescription.input`,
+  src/core.ts). A throw in `describe` leaves a plain card, so it can't
+  refuse a call.
+- **A step's own answer to a gated call** (`answerGated`): a value is the
+  agent's answer in place of a proposal, and a throw fails the call, which
+  the agent reads (src/steps/core/agent.ts). An accepted proposal runs the
+  step with `ctx.proposal` set (src/proposals.ts).
 - **A package step's `describe` runs inside the package's fence**, as
   its `run` does, since stakwork/strut#880 (`main` @8599310): so do
   `answerGated` and `onReplay` (`STEP_FUNCTIONS`, src/packages/fence.ts).

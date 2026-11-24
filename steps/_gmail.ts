@@ -580,6 +580,31 @@ export function formatAddress(a: Address): string {
   return `${shown} <${a.address}>`;
 }
 
+/** How many recipients a list names: its non-empty parts between commas or semicolons outside quotes and `<…>`. */
+function partsOf(raw: string): number {
+  let parts = 0;
+  let part = "";
+  let quoted = false;
+  let angle = false;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]!;
+    if (quoted && ch === "\\") {
+      part += ch + (raw[++i] ?? "");
+      continue;
+    }
+    if (ch === '"' && !angle) quoted = !quoted;
+    else if (!quoted && ch === "<") angle = true;
+    else if (!quoted && ch === ">") angle = false;
+    if (!quoted && !angle && (ch === "," || ch === ";")) {
+      if (part.trim()) parts++;
+      part = "";
+      continue;
+    }
+    part += ch;
+  }
+  return part.trim() ? parts + 1 : parts;
+}
+
 /** Recipients a workflow names: an address, `Name <address>`, or a list of them. */
 export function recipients(to: string | string[] | undefined): Address[] {
   if (to === undefined) return [];
@@ -588,8 +613,7 @@ export function recipients(to: string | string[] | undefined): Address[] {
   for (const raw of list) {
     if (/[\r\n\0]/.test(raw)) throw new Error("a recipient can't have a line break in it");
     const found = addressesOf(raw);
-    const parts = raw.split(/[,;]/).filter((s) => s.trim()).length;
-    if (!found.length || found.length < parts) throw new Error(`not an address: ${scrub(raw).slice(0, 100)}`);
+    if (!found.length || found.length < partsOf(raw)) throw new Error(`not an address: ${scrub(raw).slice(0, 100)}`);
     out.push(...found);
   }
   if (out.length > 50) throw new Error("at most 50 recipients");
@@ -760,6 +784,16 @@ export interface Compose {
  * there; or a new one, to `to`. `to` names the recipients either way.
  */
 export async function compose(ctx: Ctx, token: string, cfg: Compose): Promise<{ raw: string; threadId?: string; to: Address[] }> {
+  const { out, threadId } = await outgoingOf(ctx, token, cfg);
+  return { raw: rawOf(out), ...(threadId !== undefined ? { threadId } : {}), to: out.to };
+}
+
+/**
+ * What `compose` writes, worked out and not yet written: from, to, subject
+ * and the headers that keep a reply in its thread. `send`'s card reads it
+ * too, so the card and the send can't disagree on whom.
+ */
+export async function outgoingOf(ctx: Ctx, token: string, cfg: Compose): Promise<{ out: Outgoing; threadId?: string }> {
   if (!cfg.text.trim()) throw new Error("say something: `text` is empty");
   const named = recipients(cfg.to);
   const from = await senderOf(ctx, token);
@@ -771,8 +805,14 @@ export async function compose(ctx: Ctx, token: string, cfg: Compose): Promise<{ 
     const to = named.length ? named : replyTargets(m);
     if (!to.length) throw new Error("the message names no one to reply to: say whom, with `to`");
     const subject = replySubject(header(m.payload, "Subject") ?? "");
-    return { raw: rawOf({ from, to, subject, text: cfg.text, ...threading(m) }), threadId: cfg.thread, to };
+    return { out: { from, to, subject, text: cfg.text, ...threading(m) }, threadId: cfg.thread };
   }
   if (!named.length) throw new Error("say whom it is to, with `to`, or which thread it answers, with `thread`");
-  return { raw: rawOf({ from, to: named, subject: cfg.subject ?? "", text: cfg.text }), to: named };
+  return { out: { from, to: named, subject: cfg.subject ?? "", text: cfg.text } };
+}
+
+/** An address as `to` takes it back (`recipients`): `"Name" <address>`, or the address alone. */
+export function asRecipient(a: Address): string {
+  const name = a.name ? oneLine(a.name).replace(/[<>]/g, "") : "";
+  return name ? `"${name.replace(/(["\\])/g, "\\$1")}" <${a.address}>` : a.address;
 }
