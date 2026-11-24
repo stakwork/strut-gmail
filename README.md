@@ -220,15 +220,15 @@ runs a day each. So a run that finds no new mail is as small as it can be:
   summary stays after its log goes, so no summary ever holds mail: the
   mail, the prompts and the model's answers are in the log alone.
 
-**`retain: 3d`** on both workflows: a run's log, with the mail and the
-prompts in it, is kept three days. The cursor needs no log (a fire's
-`last` is read from the summary). The drafts and Needs you need none
-either (the app's database has them). The log is for "why did it write
-this?", asked about a draft found after a weekend. A count would not do:
-`{ runs: N }` counts every person's runs of the workflow together.
-`reply-one` runs inside `reply`'s run and log, so its own `retain` is for
-a run of one message started by hand. On a box with an archive bucket,
-retention uploads a log before it removes it.
+**`retain: 1d`** on both workflows: a run's log, with the mail and the
+prompts in it, is dropped after a day (ruling 12 of stadeum's
+`plans/gmail.md`). Nothing needs it longer: the cursor is read from the
+run's summary (a fire's `last`), and the drafts and Needs you from the
+app's database. A count would not do: `{ runs: N }` counts every person's
+runs of the workflow together. `reply-one` runs inside `reply`'s run and
+log, so its own `retain` is for a run of one message started by hand. On
+a box with an archive bucket, retention uploads a log before it removes
+it.
 
 ### What the model is given
 

@@ -5,8 +5,8 @@ description: One message for `reply`. Gather what a reply is written from, ask t
 # works out. Its instructions are the pages'.
 #
 # Run by `reply`, it is a part of that run and its log. `retain` here is
-# for a run of one message started by hand.
-retain: 3d
+# for a run of one message started by hand: a day, as `reply`'s.
+retain: 1d
 input:
   message: { type: string, description: "The message's id, from `look`" }
 params:

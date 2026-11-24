@@ -1180,7 +1180,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const flow = await strut.workspace.getWorkflow("stadeum/gmail/reply");
     assert.deepEqual(flow.steps.map((s: any) => s.type), ["look", "foreach", "pack"]);
     const one = await strut.workspace.getWorkflow("stadeum/gmail/reply-one");
-    for (const f of [flow, one]) assert.match(JSON.stringify(f.retain), /3d|259200/, "logs kept three days");
+    for (const f of [flow, one]) assert.match(JSON.stringify(f.retain), /"1d"|86400000/, "logs dropped after a day");
     assert.deepEqual(one.steps.map((s: any) => s.type), ["context", "if", "agent", "answer"]);
     const agent = one.steps.find((s: any) => s.type === "agent").config;
     assert.deepEqual(agent.toolFilter, ["none"]);
