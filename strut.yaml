@@ -9,3 +9,19 @@ requires:
   optional: [GOOGLE_TOKEN]
 provides:
   secrets: [GOOGLE_TOKEN]
+# `reply` every five minutes, once for each person who holds their own
+# GOOGLE_TOKEN, as that person: their token, their bill, and their own
+# `last`, so each run starts where that person's last one stopped. Nobody
+# else's run, and none for the deployment's value, which is nobody's. An
+# admin turns it on or off for everyone at once. Each run's log goes after
+# a day (`retain: 1d` in workflows/reply.yaml, ruling 12).
+schedules:
+  - workflow: reply
+    trigger: { every: interval, minutes: 5 }
+    input: { since: "{{ last.output.since }}" }
+    each: GOOGLE_TOKEN
+# The most one run of `reply` may spend on the model, in dollars: every
+# message it answers, its `reply-one` runs included. An admin's own cap
+# wins over it.
+maxRunCostUsd:
+  reply: 1

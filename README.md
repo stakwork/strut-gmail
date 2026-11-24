@@ -25,7 +25,7 @@ Three rules hold in every step (the plan's §6):
 
 | Part | What |
 | --- | --- |
-| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. No schedule and no job tools yet |
+| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. No job tools yet |
 | `steps/me.ts` | Which mailbox the person connected: Gmail's profile, read with their own token. Says when Google no longer takes it |
 | `steps/disconnect.ts` | Revokes the person's grant at Google, then removes their token. From the Gmail app alone, by the person themselves |
 | `steps/new.ts` | Mail that matches a search and came since the last look, oldest first |
@@ -265,7 +265,7 @@ sender, sent to the forger.
 
 ### What a run costs
 
-A schedule will run `reply` every five minutes for each person: 288 kept
+The schedule runs `reply` every five minutes for each person: 288 kept
 runs a day each. So a run that finds no new mail is as small as it can be:
 
 - **One call to Gmail**, its search, answered with no messages. None at
@@ -285,6 +285,18 @@ runs of the workflow together. `reply-one` runs inside `reply`'s run and
 log, so its own `retain` is for a run of one message started by hand. On
 a box with an archive bucket, retention uploads a log before it removes
 it.
+
+**A run of `reply` may spend $1 on the model** (`maxRunCostUsd:` in
+`strut.yaml`). That is every message it answers: `reply-one` runs inside
+`reply`'s run, so its model calls count against `reply`'s cap.
+
+- An admin's own cap for the workflow wins over it, and stays through a
+  release (`PUT /workflows/stadeum%2Fgmail%2Freply/run-cap`).
+- The box's model gateway holds it. The Mothership's run link carries the
+  cap, and the gateway refuses the call that would go past it. A box that
+  calls a model straight with its own key has no cap.
+- A workflow of a person's own that runs `reply` inside it has that
+  workflow's cap, not this one.
 
 ### What the model is given
 
@@ -323,10 +335,34 @@ Gmail, so a workflow can't hand it others.
 
 ### Running `reply`
 
-`reply` takes `since` and hands it back, so it runs on any schedule:
+The package ships its schedule (`strut.yaml`):
 
 ```yaml
-# A workflow of the person's own.
+schedules:
+  - workflow: reply
+    trigger: { every: interval, minutes: 5 }
+    input: { since: "{{ last.output.since }}" }
+    each: GOOGLE_TOKEN
+```
+
+- **One run for each person who holds their own `GOOGLE_TOKEN`**, as that
+  person: their token, their bill, and nobody else's. A person with no
+  token gets no run. The deployment's `GOOGLE_TOKEN` is nobody's, so it
+  gets none either.
+- **Each person's `last` is their own**, so each run starts where that
+  person's last run stopped. Their first run hands back where to start,
+  with no backlog.
+- A person whose last run is still going is skipped that time. The others
+  run.
+- An admin turns it on or off, for everyone at once. Strut's Automate tab
+  shows it as "Runs as each person with GOOGLE_TOKEN".
+- A schedule passes no `params`, so a scheduled run uses `reply`'s
+  `params.model`.
+
+`reply` takes `since` and hands it back, so a person may also run it from
+a workflow of their own, on a schedule of their own:
+
+```yaml
 input:
   since: { type: string, default: "" }
 steps:
@@ -337,26 +373,8 @@ steps:
       input: { since: "{{ input.since }}" }
 ```
 
-Scheduled every five minutes with the input
-`{ "since": "{{ last.output.since }}" }`.
-
-Today a fire runs as its workflow's **owner** (strut's
-`docs/automations.md`, "Whom a fire runs as"), and the owner of
-`stadeum/gmail/reply` is whoever installed the package. So a person
-schedules a workflow of their own, as above, which runs `reply` as them.
-The plan's per-person schedule (`each: GOOGLE_TOKEN`, item 3) is
-stakwork/strut#871. Once a box's strut has it, the package ships:
-
-```yaml
-schedules:
-  - workflow: reply
-    trigger: { every: interval, minutes: 5 }
-    each: GOOGLE_TOKEN
-```
-
-and this wrapper is not needed. #871 is merged into strut's `main`; a
-strut without it refuses `each:`, so it is not in `strut.yaml` until a
-release has it.
+That run is their workflow's, with its cap and its `retain`, not
+`reply`'s.
 
 ### What it keeps
 
@@ -531,31 +549,36 @@ rests on. The test runs each one.
   do: it inlines the entry page alone, and lists the pages under it for an
   agent to open with a tool, which this agent does not have.
 
-Two things strut is gaining, worked around nowhere in the package:
+Two more, in strut's `main` since 0d6ec1fe. The test fires the schedule,
+and reads the cap on each model call of a run of `reply`.
 
-- **A workflow's cost cap, shipped by its package.** Today `maxRunCostUsd`
-  is a workflow's metadata on the box, set with `PUT
-  /workflows/:name/run-cap`. stakwork/strut#874 (open) adds a top-level map
-  in `strut.yaml`, by workflow name, which an admin's own cap on the box
-  overrides:
-
-  ```yaml
-  maxRunCostUsd:
-    reply: 1
-  ```
-
-  A strut without #874 refuses the key, so it is not in `strut.yaml` yet.
-- **A schedule for each person:** stakwork/strut#871, merged into strut's
-  `main` ("Running `reply`", above).
-
-Both keys go into `strut.yaml` in one change once both are released, and
-this README will then say which strut the package needs.
+- **A schedule for each person** (stakwork/strut#871). A package's
+  schedule may name a secret the package provides, `each: GOOGLE_TOKEN`.
+  Each fire then runs the workflow once for each person who holds that
+  secret as their own, as that person (`ActorSecretStore.holders`, which
+  reads names, never values). Each person has their own `last`. Strut
+  refuses an `each:` the package does not provide
+  (src/packages/format.ts; docs/automations.md, "A schedule for each
+  person").
+- **A workflow's cost cap, shipped by its package** (stakwork/strut#874).
+  `maxRunCostUsd:` names the package's own workflows. The install records
+  the cap on the workflow's version, and an admin's own cap wins over it
+  (`workflowRunCap`, src/run-cap.ts). A model call names the top workflow
+  of its run, a subflow's included (`LlmAuthContext.workflow`,
+  src/llm.ts), so `reply-one`'s calls go under `reply`'s cap. The
+  Mothership puts the cap on the call's run link, for the gateway
+  (src/mothership.ts).
 
 ## What a box needs
 
-- **A strut at or after stakwork/strut#867's merge** (`main` @3a8e900e),
-  which has `provides.secrets` and `secrets.own` (#789, #790) too. On an
-  older strut, the `agent` step wants a `cwd`, and `reply` fails.
+- **A strut at or after `0d6ec1fe` on `main`**, the first with both
+  `schedules:` with `each:` (#871) and `maxRunCostUsd:` (#874). Strut
+  reads `strut.yaml` strictly, so an older strut refuses the package
+  instead of installing it without its schedule or its cap. That strut
+  has what Replies needed before too: `provides.secrets` and
+  `secrets.own` (#789, #790), and an `agent` step with no `cwd` (#867).
+- **The Mothership's model gateway**, for the cap. Without it a run of
+  `reply` has no cap.
 - **Secrets that refresh themselves** (the plan's item 1, in strut). A
   Google access token lasts about an hour. The steps read
   `secrets.own.get("GOOGLE_TOKEN")` and send what it gives as a bearer
@@ -609,6 +632,13 @@ reads. The last test looks for every token in what pages and workflows were
 given, the runs and their events, the logs, and every file under the data
 directory.
 
+One person's model calls go through a stand-in for the box's gateway
+instead. Strut's Mothership holds an authorization for them, made with a
+test key. The stand-in checks each call's run link, notes the cap it
+carries, and passes the call to the fake model. It answers in Anthropic's
+format too, so a scheduled run, at `reply`'s own `claude-sonnet-5-5`, can
+write and send a reply.
+
 ```bash
 STRUT_DIR=../strut npm test
 ```
@@ -641,3 +671,9 @@ gh workflow run promote.yml -R stakwork/strut-gmail -f commit=<sha>
 ```
 
 The first run makes `stable`.
+
+**Strut's `stable` moves first.** A box installs from this package's
+`stable` with the strut it has, and a strut older than `0d6ec1fe` refuses
+a `strut.yaml` with `schedules:` and `maxRunCostUsd:`. So `stable` here
+moves to a commit with those keys only after strut's `stable` is at or
+after `0d6ec1fe`.
