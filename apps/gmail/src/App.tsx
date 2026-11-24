@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { gmailLink, seamLink } from "./links";
@@ -43,16 +44,29 @@ interface Disconnected {
   why?: string;
   manage?: string;
 }
+type Choice = "draft" | "written" | "anyone";
 interface Settings {
   replies: boolean;
+  choice: Choice;
   search: string;
   instructions: string;
 }
+type Who = { address: string; name?: string };
 interface Waiting {
   drafts: number;
-  needsYou: Array<{ thread: string; message: string; from?: { address: string; name?: string }; subject: string; reason: string; at: string }>;
+  needsYou: Array<{ thread: string; message: string; from?: Who; subject: string; reason: string; at: string }>;
+  sentForYou: Array<{ thread: string; message: string; from?: Who; line: string; at: string }>;
   page?: string;
 }
+
+/** Who gets a reply without a click, and a few words on what that means. */
+const CHOICES: Array<{ value: Choice; label: string; words: string }> = [
+  { value: "draft", label: "Draft", words: "You send each one in Gmail" },
+  { value: "written", label: "Send to people I've written to", words: "Everyone else gets a draft" },
+  { value: "anyone", label: "Send to anyone", words: "Never to lists or machines" },
+];
+
+const nameOf = (who: Who | undefined) => who?.name ?? who?.address ?? "Unknown sender";
 
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e)).replace(/^(step_run: |Error: )+/, "");
 
@@ -259,6 +273,22 @@ function Replies({ address }: { address?: string }) {
         )}
         {s && on && (
           <CardContent className="flex flex-col gap-5 px-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <Select value={s.choice} onValueChange={(choice) => void save({ choice: choice as Choice })}>
+                <SelectTrigger className="w-64" aria-label="Who gets a reply">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {CHOICES.map((c) => (
+                    <SelectItem key={c.value} value={c.value}>
+                      {c.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <span className="text-sm text-muted-foreground">{CHOICES.find((c) => c.value === s.choice)?.words}</span>
+            </div>
+
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span>{waiting.isLoading ? "Counting drafts…" : `${drafts} ${drafts === 1 ? "draft" : "drafts"} waiting`}</span>
               <Button variant="link" className="h-auto p-0" onClick={() => open(gmailLink(address, "drafts"))}>
@@ -295,10 +325,33 @@ function Replies({ address }: { address?: string }) {
                 onClick={() => open(gmailLink(address, { thread: n.thread }))}
               >
                 <span className="flex min-w-0 items-baseline gap-2 text-sm">
-                  <span className="shrink-0 font-medium">{n.from?.name ?? n.from?.address ?? "Unknown sender"}</span>
+                  <span className="shrink-0 font-medium">{nameOf(n.from)}</span>
                   <span className="truncate">{n.subject || "(no subject)"}</span>
                 </span>
                 <span className="text-xs text-muted-foreground">{n.reason}</span>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {s && on && (
+        <Card className="gap-3 py-4">
+          <CardHeader className="px-4">
+            <CardTitle className="text-base">Sent for you</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col divide-y px-4">
+            {waiting.isLoading && <p className="py-2 text-sm text-muted-foreground">Loading…</p>}
+            {waiting.data && !waiting.data.sentForYou.length && <p className="py-2 text-sm text-muted-foreground">Nothing yet</p>}
+            {waiting.data?.sentForYou.map((r) => (
+              <button
+                key={r.message}
+                type="button"
+                className="flex min-w-0 items-baseline gap-2 py-2 text-left text-sm hover:bg-muted/50"
+                onClick={() => open(gmailLink(address, { thread: r.thread }))}
+              >
+                <span className="shrink-0 font-medium">{nameOf(r.from)}</span>
+                <span className="truncate text-muted-foreground">{r.line}</span>
               </button>
             ))}
           </CardContent>

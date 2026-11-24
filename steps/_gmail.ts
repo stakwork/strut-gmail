@@ -701,6 +701,15 @@ function draftOut(body: unknown): { draft: string; message: string; thread: stri
   return { draft: String(b.id ?? ""), message: String(b.message?.id ?? ""), thread: String(b.message?.threadId ?? "") };
 }
 
+/** Send a draft: Gmail's `drafts.send`. The draft is gone, and the answer is the sent message. */
+export async function sendDraft(ctx: Ctx, token: string, draft: string): Promise<{ message: string; thread: string }> {
+  if (!isId(draft)) throw new Error(`not a draft's id: ${scrub(draft)}`);
+  const res = await gmail(ctx, token, "/drafts/send", { method: "POST", body: { id: draft } });
+  if (!res.ok) throw refused(res, token, "send it");
+  const b = (res.body ?? {}) as { id?: unknown; threadId?: unknown };
+  return { message: String(b.id ?? ""), thread: String(b.threadId ?? "") };
+}
+
 /** The ids of every draft in the mailbox, up to 2,500. */
 export async function draftIdsOf(ctx: Ctx, token: string): Promise<Set<string>> {
   const ids = new Set<string>();

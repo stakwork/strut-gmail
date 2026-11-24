@@ -10,7 +10,7 @@
  */
 import { randomBytes } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { APP, isDraft, isMachine, isMine, mailOf, type Ctx, type GMessage, type Mail } from "./_gmail.js";
+import { APP, addressesOf, header, idsOf, isDraft, isMachine, isMine, mailOf, plainAddress, replyTargets, type Ctx, type GMessage, type Mail } from "./_gmail.js";
 
 /** The package's page on how to answer mail; a box adds pages under it. */
 export const PAGE = "Mail Replies";
@@ -53,9 +53,19 @@ export async function dbOf(ctx: ReplyCtx): Promise<DatabaseSync> {
   return dbs.open(APP);
 }
 
+/**
+ * Who gets a reply without a click (the plan's §4.3): nobody (`draft`), a
+ * sender the person has written to before (`written`), or any sender
+ * (`anyone`). Every reply the choice does not send is a draft.
+ */
+export type Choice = "draft" | "written" | "anyone";
+export const CHOICES: readonly Choice[] = ["draft", "written", "anyone"];
+
 export interface Settings {
   /** Replies is on: `reply` answers this person's mail. */
   replies: boolean;
+  /** Who gets a reply without a click. */
+  choice: Choice;
   /** The mail it answers: a Gmail search. */
   search: string;
   /** The person's own instructions, after the shared pages. */
@@ -64,8 +74,10 @@ export interface Settings {
 
 /** A person's choices; the defaults until they change one, so Replies is on from the moment they connect. */
 export function settingsOf(db: DatabaseSync, actor: string): Settings {
-  const row = db.prepare("SELECT replies, search, instructions FROM people WHERE actor = ?").get(actor) as { replies: number; search: string; instructions: string } | undefined;
-  return row ? { replies: row.replies === 1, search: row.search, instructions: row.instructions } : { replies: true, search: DEFAULT_SEARCH, instructions: "" };
+  const row = db.prepare("SELECT replies, choice, search, instructions FROM people WHERE actor = ?").get(actor) as { replies: number; choice: string; search: string; instructions: string } | undefined;
+  if (!row) return { replies: true, choice: "draft", search: DEFAULT_SEARCH, instructions: "" };
+  const choice = (CHOICES as readonly string[]).includes(row.choice) ? (row.choice as Choice) : "draft";
+  return { replies: row.replies === 1, choice, search: row.search, instructions: row.instructions };
 }
 
 /** Change some of a person's choices. An empty search is the default one. */
@@ -73,26 +85,43 @@ export function saveSettings(db: DatabaseSync, actor: string, patch: Partial<Set
   const next = { ...settingsOf(db, actor), ...patch };
   next.search = next.search.trim() || DEFAULT_SEARCH;
   db.prepare(
-    "INSERT INTO people (actor, replies, search, instructions, updated_at) VALUES (:actor, :replies, :search, :instructions, :at) " +
-      "ON CONFLICT (actor) DO UPDATE SET replies = excluded.replies, search = excluded.search, instructions = excluded.instructions, updated_at = excluded.updated_at",
-  ).run({ actor, replies: next.replies ? 1 : 0, search: next.search, instructions: next.instructions, at: new Date().toISOString() });
+    "INSERT INTO people (actor, replies, choice, search, instructions, updated_at) VALUES (:actor, :replies, :choice, :search, :instructions, :at) " +
+      "ON CONFLICT (actor) DO UPDATE SET replies = excluded.replies, choice = excluded.choice, search = excluded.search, instructions = excluded.instructions, updated_at = excluded.updated_at",
+  ).run({ actor, replies: next.replies ? 1 : 0, choice: next.choice, search: next.search, instructions: next.instructions, at: new Date().toISOString() });
   return next;
 }
 
-export type Did = "draft" | "handoff" | "nothing" | "stood-down";
+export type Did = "draft" | "sent" | "handoff" | "nothing" | "stood-down";
 
 export interface Handled {
   message: string;
   thread: string;
   did: Did;
   draft?: string | null;
+  /** The message it sent, when it sent one. */
+  sent?: string | null;
+  /** A handoff's reason, or why it stood down. */
   reason?: string | null;
+  /** Why a reply the choice would have sent is a draft. */
+  held?: string | null;
   at: string;
 }
 
+const COLUMNS = "message, thread, did, draft, sent, reason, held, at";
+
 /** What `answer` did with a message, if it did anything. */
 export function handledOf(db: DatabaseSync, actor: string, message: string): Handled | undefined {
-  return db.prepare("SELECT message, thread, did, draft, reason, at FROM handled WHERE actor = ? AND message = ?").get(actor, message) as Handled | undefined;
+  return db.prepare(`SELECT ${COLUMNS} FROM handled WHERE actor = ? AND message = ?`).get(actor, message) as Handled | undefined;
+}
+
+/** The ids of every message `answer` sent for the person: their mail that no click of theirs sent. */
+export function sentIdsOf(db: DatabaseSync, actor: string): Set<string> {
+  return new Set((db.prepare("SELECT sent FROM handled WHERE actor = ? AND sent IS NOT NULL").all(actor) as Array<{ sent: string }>).map((r) => r.sent));
+}
+
+/** What went out without a click, newest first. */
+export function sentOf(db: DatabaseSync, actor: string, limit = 20): Handled[] {
+  return db.prepare(`SELECT ${COLUMNS} FROM handled WHERE actor = ? AND did = 'sent' ORDER BY at DESC, rowid DESC LIMIT ?`).all(actor, limit) as unknown as Handled[];
 }
 
 /** The draft `answer` left in a thread before, still its latest, if any. */
@@ -107,8 +136,19 @@ export function record(db: DatabaseSync, actor: string, h: Omit<Handled, "at">):
   const at = new Date().toISOString();
   db.exec("BEGIN");
   try {
-    if (h.draft) db.prepare("UPDATE handled SET draft = NULL WHERE actor = ? AND thread = ?").run(actor, h.thread);
-    db.prepare("INSERT INTO handled (actor, message, thread, did, draft, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(actor, h.message, h.thread, h.did, h.draft ?? null, h.reason ?? null, at);
+    // A new draft, or one sent (and so gone), ends the thread's earlier one.
+    if (h.draft || h.sent) db.prepare("UPDATE handled SET draft = NULL WHERE actor = ? AND thread = ?").run(actor, h.thread);
+    db.prepare("INSERT INTO handled (actor, message, thread, did, draft, sent, reason, held, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+      actor,
+      h.message,
+      h.thread,
+      h.did,
+      h.draft ?? null,
+      h.sent ?? null,
+      h.reason ?? null,
+      h.held ?? null,
+      at,
+    );
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
@@ -125,8 +165,8 @@ export function draftsLeft(db: DatabaseSync, actor: string): string[] {
 export function handoffsOf(db: DatabaseSync, actor: string, limit = 20): Handled[] {
   return db
     .prepare(
-      "SELECT h.message, h.thread, h.did, h.draft, h.reason, h.at FROM handled h WHERE h.actor = ? AND h.did = 'handoff' " +
-        "AND h.at = (SELECT MAX(at) FROM handled x WHERE x.actor = h.actor AND x.thread = h.thread) ORDER BY h.at DESC LIMIT ?",
+      "SELECT h.message, h.thread, h.did, h.draft, h.sent, h.reason, h.held, h.at FROM handled h WHERE h.actor = ? AND h.did = 'handoff' " +
+        "AND h.at = (SELECT MAX(at) FROM handled x WHERE x.actor = h.actor AND x.thread = h.thread) ORDER BY h.at DESC, h.rowid DESC LIMIT ?",
     )
     .all(actor, limit) as unknown as Handled[];
 }
@@ -150,6 +190,66 @@ export function standDown(m: GMessage, thread: GMessage[]): string | undefined {
   if (after.some(isMine)) return "the person answered in the thread";
   if (after.length) return "a newer message came in the thread";
   return undefined;
+}
+
+// ── when a reply is not sent ──────────────────────────────────────────────
+
+/** How many replies may go out without a click in a thread before the person writes in it again. */
+export const SENT_IN_A_ROW = 3;
+
+/**
+ * A reply goes to the message's sender and nobody else: no Reply-To naming
+ * someone else, or several. Whoever else the mail went to never gets a reply
+ * (`replyTargets`).
+ */
+export function toSenderAlone(m: GMessage): boolean {
+  const from = addressesOf(header(m.payload, "From"))[0];
+  const to = replyTargets(m);
+  return !!from && to.length === 1 && plainAddress(to[0]!.address) === plainAddress(from.address);
+}
+
+/**
+ * The mail went to more people than the person: someone besides the
+ * mailbox's own addresses in To or Cc. `context` writes such a reply from the
+ * thread alone. It may still be sent, to the sender alone (ruling 14).
+ */
+export function toSeveral(m: GMessage, own: Set<string>): boolean {
+  return [...addressesOf(header(m.payload, "To")), ...addressesOf(header(m.payload, "Cc"))].some((a) => !own.has(plainAddress(a.address)));
+}
+
+/**
+ * Why a reply that the person's choice would send is left as a draft, or
+ * none: it may go. Held in the step, so no page, instruction or mail
+ * changes it. (A handoff is a draft too; `answer` says so itself.)
+ *
+ * 1. the reply would go to someone other than its sender (ruling 13): a Reply-To
+ *    elsewhere, whom the reply was not written for (`context` reads the
+ *    earlier mail with the sender);
+ * 2. under `written`, the person has not written to the sender before;
+ * 3. `SENT_IN_A_ROW` replies already went out without a click in the
+ *    thread since the person last wrote in it themselves.
+ *
+ * Mail that went to several people is not held back (ruling 14): its reply
+ * goes to the sender alone, as any other.
+ */
+export function holdBack(o: { m: GMessage; thread: GMessage[]; ours: Set<string>; choice: Choice; writtenBefore: boolean }): string | undefined {
+  if (o.choice === "draft") return undefined;
+  if (!toSenderAlone(o.m)) return "the reply would go to someone other than the sender";
+  if (o.choice === "written" && !o.writtenBefore) return "the person hasn't written to the sender before";
+  const mail = o.thread.filter((x) => !isDraft(x));
+  let since = -1;
+  mail.forEach((x, i) => {
+    if (isMine(x) && !o.ours.has(x.id ?? "")) since = i;
+  });
+  const inARow = mail.slice(since + 1).filter((x) => o.ours.has(x.id ?? "")).length;
+  if (inARow >= SENT_IN_A_ROW) return `${SENT_IN_A_ROW} replies went out without a click in this thread since the person last wrote in it`;
+  return undefined;
+}
+
+/** The person has written to `address` before: their own sent mail to it, not a message `answer` sent. */
+export async function writtenTo(ctx: Ctx, token: string, address: string, ours: Set<string>): Promise<boolean> {
+  const { ids } = await idsOf(ctx, token, `in:sent to:${address}`, 20);
+  return ids.some((id) => !ours.has(id));
 }
 
 // ── the pages ─────────────────────────────────────────────────────────────
