@@ -990,7 +990,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
 
     await seam("gil", T.gil);
     await seam("hal", T.hal);
-    const other = await strut.app.request("/actors/ivy/secrets/OTHER_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "x" }) });
+    const other = await strut.app.request("/actors/noa/secrets/OTHER_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "x" }) });
     assert.equal(other.status, 200, await other.text());
     assert.equal((await view()).people, 2);
 
