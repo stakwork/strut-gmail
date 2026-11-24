@@ -25,7 +25,7 @@ Three rules hold in every step (the plan's §6):
 
 | Part | What |
 | --- | --- |
-| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. No job tools yet |
+| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` and `ask` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. No job tools yet |
 | `steps/me.ts` | Which mailbox the person connected: Gmail's profile, read with their own token. Says when Google no longer takes it |
 | `steps/disconnect.ts` | Revokes the person's grant at Google, then removes their token. From the Gmail app alone, by the person themselves |
 | `steps/new.ts` | Mail that matches a search and came since the last look, oldest first |
@@ -492,12 +492,31 @@ and their address only when new mail of theirs needs it. With Email Jamie
 off it makes no call. Its output, all its summary keeps, is `{ since }`
 alone, and both workflows set `retain: 1d` (ruling 12).
 
+**No cost cap of its own.** `ask`'s run makes no model call: it reads mail,
+and starts and reads jobs. A job runs as strut's own `job` workflow, in
+runs of its own, so a cap on `ask` would not count what a job spends. A
+job's runs are under the `job` workflow's cap on the box, and under a
+budget when the person gives the job one (`job/start`'s `budgetUsd` is
+only ever the person's own figure, so `ask` sets none).
+
 ### Running `ask`
 
-As `reply` ("Running `reply`"): a workflow of the person's own runs
-`stadeum/gmail/ask` as a subflow, scheduled every five minutes with the
-input `{ "since": "{{ last.output.since }}" }`, until the package ships its
-own schedule for each person (`each: GOOGLE_TOKEN`).
+As `reply` ("Running `reply`"): the package's schedule runs it every five
+minutes for each person who holds their own `GOOGLE_TOKEN`, as them, from
+where their own last run stopped (`strut.yaml`):
+
+```yaml
+  - workflow: ask
+    trigger: { every: interval, minutes: 5 }
+    input: { since: "{{ last.output.since }}" }
+    each: GOOGLE_TOKEN
+```
+
+The schedule is on or off for everyone at once, and Email Jamie is off
+until a person turns it on (the plan's decision 5). So for a person who
+hasn't, a scheduled run is three steps and no call to Gmail: no token read,
+no job, and an empty `since`. Their first run after they turn it on starts
+from then, with no backlog.
 
 ## The Gmail app
 

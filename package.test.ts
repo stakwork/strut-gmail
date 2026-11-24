@@ -1036,7 +1036,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     await rm(root, { recursive: true, force: true, maxRetries: 5 });
   });
 
-  it("installs whole: the token it provides, its steps, its app, a schedule of `reply` for each person, and its cap", async () => {
+  it("installs whole: the token it provides, its steps, its app, a schedule of `reply` and of `ask` for each person, and reply's cap", async () => {
     const { packages } = await (await strut.app.request("/packages")).json();
     const pkg = packages.find((p: any) => p.package === "stadeum/gmail");
     assert.ok(pkg, "installed");
@@ -1052,16 +1052,23 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const { automations } = await (await strut.app.request("/automations")).json();
     const shipped = automations.filter((a: any) => a.package === "stadeum/gmail");
     assert.deepEqual(
-      shipped.map((a: any) => [a.name, a.workflow, a.trigger.every, a.trigger.minutes, a.input, a.each, a.enabled]),
-      [["reply", "stadeum/gmail/reply", "interval", 5, { since: "{{ last.output.since }}" }, "GOOGLE_TOKEN", true]],
+      shipped.map((a: any) => [a.name, a.workflow, a.trigger.every, a.trigger.minutes, a.input, a.each, a.enabled]).sort((a: any, b: any) => (a[0] < b[0] ? 1 : -1)),
+      [
+        ["reply", "stadeum/gmail/reply", "interval", 5, { since: "{{ last.output.since }}" }, "GOOGLE_TOKEN", true],
+        ["ask", "stadeum/gmail/ask", "interval", 5, { since: "{{ last.output.since }}" }, "GOOGLE_TOKEN", true],
+      ],
     );
     const listed = (await (await strut.app.request("/workflows")).json()) as any[];
     const cap = (name: string) => listed.find((w) => w.name === name)?.packageMaxRunCostUsd;
-    assert.deepEqual([cap("stadeum/gmail/reply"), cap("stadeum/gmail/reply-one")], [1, undefined], "a run of reply, its reply-one runs inside it");
+    assert.deepEqual(
+      ["reply", "reply-one", "ask", "ask-turn"].map((w) => cap(`stadeum/gmail/${w}`)),
+      [1, undefined, undefined, undefined],
+      "a run of reply, its reply-one runs inside it; ask makes no model call",
+    );
   });
 
   /** A run the scheduler started, once it has ended: how it started, and its summary. */
-  const ended = async (workflow: string, runId: string) => {
+  const scheduledRun = async (workflow: string, runId: string) => {
     for (let i = 0; i < 1000; i++) {
       const summary = await store.getRunSummary(workflow, runId);
       if (summary) {
@@ -1075,14 +1082,15 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
   };
 
   const REPLY = "stadeum/gmail/reply";
-  /** The package's schedule of `reply`, as strut lists it. */
-  const view = async () => ((await (await strut.app.request("/automations")).json()).automations as any[]).find((a) => a.package === "stadeum/gmail");
+  const ASK = "stadeum/gmail/ask";
+  /** The package's schedule of one of its workflows, as strut lists it. */
+  const view = async (workflow = REPLY) => ((await (await strut.app.request("/automations")).json()).automations as any[]).find((a) => a.package === "stadeum/gmail" && a.workflow === workflow);
   /** One fire of it, as its clock would: each person's run, once it has ended. */
-  const fire = async () => {
-    const res = await strut.app.request(`/workflows/${encodeURIComponent(REPLY)}/automations/${(await view()).id}/fire`, { method: "POST" });
+  const fire = async (workflow = REPLY) => {
+    const res = await strut.app.request(`/workflows/${encodeURIComponent(workflow)}/automations/${(await view(workflow)).id}/fire`, { method: "POST" });
     const body = await res.json();
     assert.equal(res.status, 202, JSON.stringify(body));
-    return Promise.all((body.runIds as string[]).map((runId) => ended(REPLY, runId)));
+    return Promise.all((body.runIds as string[]).map((runId) => scheduledRun(workflow, runId)));
   };
 
   it("runs `reply` for each person who holds their own GOOGLE_TOKEN, as them, from where their last run stopped; for nobody else", async () => {
@@ -1913,6 +1921,29 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.equal((await ok(page("kai")("stadeum/gmail/save", { ask: true }))).ask, true);
     await askRun(); // the first look: where to start
     assert.match(kaiSince, /^\d+$/);
+  });
+
+  it("runs `ask` on the schedule for each person: for one who hasn't turned it on, three steps, no call to Gmail and no job", async () => {
+    const n = calls.length;
+    const jobs = (await store.listRuns("job")).length;
+    const runs = await fire(ASK);
+    assert.equal(runs.length, (await view(ASK)).people, "one run for each person with a token");
+    assert.ok(runs.length > 2);
+    for (const r of runs) {
+      assert.equal(r.summary.status, "success", `${r.start.principal}: ${JSON.stringify(r.summary.error)}`);
+      assert.deepEqual([r.start.origin, r.start.actor], ["schedule", undefined]);
+    }
+    const off = runs.filter((r) => r.start.principal !== "kai");
+    assert.equal(off.length, runs.length - 1, "only Kai has Email Jamie on");
+    for (const r of off) {
+      assert.deepEqual(r.summary.output, { since: "" }, `${r.start.principal}: nothing, and an empty since`);
+      const events = store.events.get([...store.events.keys()].find((k: string) => k.endsWith(r.runId))!) as Array<{ type: string; stepType?: string }>;
+      assert.deepEqual(events.filter((e) => e.type === "step.start").map((e) => e.stepType), ["stadeum/gmail/ask-look", "foreach", "pack"], r.start.principal);
+    }
+    assert.ok(since(n).every((c) => c.auth === `Bearer ${T.kai}`), "a call to Gmail for Kai's run alone");
+    assert.equal((await store.listRuns("job")).length, jobs, "no job started");
+    const kais = runs.find((r) => r.start.principal === "kai")!;
+    assert.match(kais.summary.output.since, /^\d+$/, "Kai's first scheduled look: where to start, with no backlog");
   });
 
   it("starts a job for mail the mailbox sent to its +jamie address, and answers in the thread, to the person alone, once it ends", async () => {
