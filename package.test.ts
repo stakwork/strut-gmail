@@ -388,6 +388,8 @@ class FakeModel {
   told: string[] = [];
   /** While set, a job turn whose prompt says "slow" waits for it. */
   hold?: Promise<void>;
+  /** While set, a reply to mail whose text has this in it fails, as a provider that is down or a gateway that refuses. */
+  failOn?: string;
 
   /** What strut's job agent "does": a reply and a pull request, from the person's last line (strut's own notes, `[…]`, and the job's id left out). */
   job(prompt: string): Record<string, unknown> {
@@ -478,6 +480,10 @@ class FakeModel {
         return reply({ content: null, tool_calls: [{ id: `job_${this.jobTurns.length}`, type: "function", function: { name: final, arguments: JSON.stringify(this.job(prompt)) } }] }, "tool_calls");
       }
       if (last?.role === "tool") return reply({ content: "Done." }, "stop");
+      if (this.failOn && body.messages.some((m) => text(m.content).includes(this.failOn!))) {
+        res.writeHead(400, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: { message: "The model is unavailable", type: "invalid_request_error" } }));
+      }
       if (!final) {
         res.writeHead(400, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: `no final_answer tool among ${tools.join(", ")}` } }));
@@ -1181,42 +1187,51 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.ok(since(n).every((c) => c.auth === `Bearer ${T.gil}` || c.auth === `Bearer ${T.hal}`), "each run on its own person's mailbox");
   });
 
-  it("names no model of its own: none or a blank one is the box's default; with no default, a reply to write fails the run plainly, and waits", async () => {
-    const run = async (since: string, params?: Record<string, unknown>) => {
-      const r = await strut.run(REPLY, { since }, { actor: "gil", principal: "gil", ...(params ? { params } : {}) });
-      seen.push(JSON.stringify(r));
-      return r;
-    };
-    const setDefault = async (value: string | null) => {
-      const res = await strut.app.request("/secrets/STRUT_DEFAULT_MODEL", value === null ? { method: "DELETE" } : { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
-      assert.ok(res.status < 300, await res.text());
-    };
-    const start = await run("");
-    assert.equal(start.status, "success", JSON.stringify(start.error));
-    google.add(T.gil, { from: "Vic Hale <vic@stranger.example>", subject: "Thursday", text: "Is Thursday good?" });
-    let turns = model.turns.length;
-    const blank = await run((start.output as any).since, { model: "" });
-    assert.equal(blank.status, "success", JSON.stringify(blank.error));
-    assert.deepEqual(model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, "")), ["fake-default"], "a blank model is none: the box's default, never a built-in one");
+  /** A run of `reply` for Gil, as Gil, from `since`; `params` as given. */
+  const gilRun = async (since: string, params?: Record<string, unknown>) => {
+    const r = await strut.run(REPLY, { since }, { actor: "gil", principal: "gil", ...(params ? { params } : {}) });
+    seen.push(JSON.stringify(r));
+    return r;
+  };
+  const modelsSince = (turns: number) => model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, ""));
 
-    // No default on the box: the run fails before any model, and says what to set.
-    await setDefault(null);
-    try {
-      google.add(T.gil, { from: "Wes Park <wes@stranger.example>", subject: "Friday", text: "Is Friday good?" });
-      turns = model.turns.length;
-      const n = calls.length;
-      const failed = await run((blank.output as any).since);
-      assert.equal(failed.status, "error");
-      assert.match(JSON.stringify(failed.error), /no model to write replies with: choose the org default model on the Models page/);
-      assert.equal(model.turns.length, turns, "no model was asked");
-      assert.ok(!since(n).some((c) => c.method !== "GET"), "nothing written to Gmail");
-    } finally {
-      await setDefault("maple/fake-default");
+  it("names no model of its own: none, or a blank one, is the box's default; one named is the one asked", async () => {
+    const start = await gilRun("");
+    assert.equal(start.status, "success", JSON.stringify(start.error));
+    let since = (start.output as any).since as string;
+    for (const [params, asked] of [[undefined, "fake-default"], [{ model: "" }, "fake-default"], [{ model: "maple/fake-replier" }, "fake-replier"]] as const) {
+      google.add(T.gil, { from: "Vic Hale <vic@stranger.example>", subject: `Asked ${asked}`, text: "Is Thursday good?" });
+      const turns = model.turns.length;
+      const r = await gilRun(since, params as Record<string, unknown> | undefined);
+      assert.equal(r.status, "success", JSON.stringify(r.error));
+      assert.deepEqual(modelsSince(turns), [asked], JSON.stringify(params ?? "no params"));
+      since = (r.output as any).since;
     }
-    // With a default again, the next run from the same place answers it.
-    const again = await run((blank.output as any).since);
+  });
+
+  it("loses no mail when a model call fails: the run fails, its since stays, and the next run answers what was left, once each", async () => {
+    const start = await gilRun("");
+    const since = (start.output as any).since as string;
+    const [a, b, c] = ["Alpha", "Bravo", "Charlie"].map((subject, i) => google.add(T.gil, { from: `${subject} Lee <${subject.toLowerCase()}@stranger.example>`, subject, text: `Question ${i}: is noon good?`, at: Date.now() + i })) as [Stored, Stored, Stored];
+    const answered = (m: Stored) => [...gil.messages.values()].filter((x) => x.threadId === m.threadId && x.id !== m.id).length;
+    model.failOn = "Question 1";
+    let turns = model.turns.length;
+    try {
+      const failed = await gilRun(since);
+      assert.equal(failed.status, "error", "the model's failure fails the run");
+      assert.match(JSON.stringify(failed.error), /The model is unavailable/);
+      assert.equal(failed.output, undefined, "no since handed back");
+      assert.deepEqual(modelsSince(turns), ["fake-default"], "Alpha answered; Bravo's call failed; Charlie never reached");
+      assert.deepEqual([a, b, c].map(answered), [1, 0, 0]);
+    } finally {
+      model.failOn = undefined;
+    }
+    // A schedule hands the next run its last successful run's `since`: the same one.
+    turns = model.turns.length;
+    const again = await gilRun(since);
     assert.equal(again.status, "success", JSON.stringify(again.error));
-    assert.deepEqual(model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, "")), ["fake-default"]);
+    assert.deepEqual(modelsSince(turns), ["fake-default", "fake-default"], "Bravo and Charlie; Alpha stands down as answered");
+    assert.deepEqual([a, b, c].map(answered), [1, 1, 1], "each answered once");
   });
 
   it("says a person with no token of their own is not connected, though the deployment has one, and asks Google nothing", async () => {

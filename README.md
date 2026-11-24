@@ -25,7 +25,7 @@ Three rules hold in every step (the plan's §6):
 
 | Part | What |
 | --- | --- |
-| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN, STRUT_DEFAULT_MODEL]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value, and `context` reads the box's default model's name. `schedules:` runs `reply` and `ask` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. `job:` grants the job agent `search`, `read`, `draft` and `send`, with `send` in `approve` ("Asked in a chat") |
+| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. `schedules:` runs `reply` and `ask` every five minutes for each person who holds one; `maxRunCostUsd:` caps a run of `reply` at $1. `job:` grants the job agent `search`, `read`, `draft` and `send`, with `send` in `approve` ("Asked in a chat") |
 | `steps/me.ts` | Which mailbox the person connected: Gmail's profile, read with their own token. Says when Google no longer takes it |
 | `steps/disconnect.ts` | Revokes the person's grant at Google, then removes their token. From the Gmail app alone, by the person themselves |
 | `steps/new.ts` | Mail that matches a search and came since the last look, oldest first |
@@ -219,15 +219,17 @@ stadeum's Models page (`STRUT_DEFAULT_MODEL`). `reply` and `reply-one`
 name no model, so strut's `agent` runs on it, read per run, and changing
 the default changes Replies. A run may name one instead, as
 `params.model`: a person's own workflow around `reply`, or the tests' fake.
-A blank one counts as none.
+A blank one counts as none (`"{{ params.model || undefined }}"`: strut
+takes `""` as a model's name).
 
-**With no default and no model named,** a run with a reply to write fails
-in `context`, before any model, with "no model to write replies with:
-choose the org default model on the Models page". Its `since` stays where
-it was, so the next run after a default is set answers that mail. Strut's
-`agent` would otherwise fall to a built-in model nobody chose, so the
-package reads the default's name to check (`requires.optional`). Mail that
-needs no reply, and a run with Replies off, never need a model.
+**A model call that fails loses no mail.** Whatever the cause (the
+gateway refusing, the cap reached, the provider down), the `agent`
+step fails, and with it that message's `reply-one`, the `foreach`, which
+stops at the first failure, and the run. A failed run hands back no
+`since`, and a schedule gives the next run its last successful run's. So
+the next run looks from the same place: what was answered stands down as
+answered, and the failed message and the mail after it are answered then,
+each once.
 
 ### Send
 
@@ -653,6 +655,14 @@ says to open Gmail in Stadeum.
 - **Replies costs what the box's default model costs.** A pricier default
   makes every reply pricier; the $1 cap on a run of `reply` is what bounds
   it.
+- **With no default model, strut's own fallback answers,** as for any
+  `agent` step: `anthropic/claude-sonnet-5-5`, through the gateway on the
+  person's key. Stadeum sets a default once any provider has a key, so
+  only a box with none gets here, and there the gateway refuses the call
+  and the mail waits.
+- **A message whose model call fails every time holds back the mail after
+  it.** Each run stops at it and keeps its `since`, so nothing is lost,
+  but nothing after it is answered until that call succeeds.
 
 ## What Google's documentation says
 
@@ -838,8 +848,8 @@ and reads the cap on each model call of a run of `reply`.
   say to connect again. Stadeum's `scripts/init-env.sh` makes them.
 - **Strut at `strut.<box>`, beside Stadeum at `<box>`**, for Connect (above).
 - **A default model**, for Replies: the org default on stadeum's Models
-  page (`STRUT_DEFAULT_MODEL`). Without one, a run with a reply to write
-  fails and says to choose it.
+  page (`STRUT_DEFAULT_MODEL`). Without one, strut's own fallback answers
+  ("Limits").
 - **Strut's jobs**, for Email Jamie and Asked in a chat: its `job`
   workflow, and a model for the job agent.
 

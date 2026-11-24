@@ -20,7 +20,6 @@ input:
 # No model of its own: a run uses the box's default model (stadeum's Models
 # page, "Org default"), so an admin who changes it changes Replies. A run may
 # name one, as `params.model`: a person's own workflow around `reply`, say.
-# With neither, a run with a reply to write fails and says what to set.
 steps:
   - id: look
     type: look

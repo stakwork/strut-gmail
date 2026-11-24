@@ -6,9 +6,7 @@
  * A mailbox is whoever's token the run has. A step reads the run's person's
  * own `GOOGLE_TOKEN` (`secrets.own`, which strut gives a package for the
  * secrets it provides) and never `secrets.get`, which would fall back to a
- * deployment's value. (`context` reads one setting with `secrets.get`: the
- * box's default model, `STRUT_DEFAULT_MODEL`, never a token.) No step takes
- * a person or an address to act for, and
+ * deployment's value. No step takes a person or an address to act for, and
  * the package keeps nothing: a step reads Gmail, or writes to it, and
  * answers.
  *
@@ -65,9 +63,8 @@ export interface Ctx {
   services?: {
     http?: Http;
     /** `own`: the run's person's own values of what the package provides,
-     *  present wherever the run has a person. `get`: a name the package
-     *  declares (`requires`), the person's own, else the deployment's. */
-    secrets?: { own?: Scope; get?: (name: string) => Promise<string | undefined> };
+     *  present wherever the run has a person. */
+    secrets?: { own?: Scope };
   };
 }
 
