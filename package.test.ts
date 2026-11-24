@@ -396,46 +396,6 @@ class FakeModel {
     return { text: `Done: ${last}`, artifacts: [{ id: "pr", title: "Pull request", url: "https://github.com/acme/app/pull/7" }] };
   }
 
-  /**
-   * The same model behind Anthropic's Messages API, as the box's gateway
-   * reaches it for an Anthropic model: `reply`'s own, which a schedule runs.
-   */
-  anthropic(body: { model: string; stream?: boolean; system?: unknown; messages: Array<{ role: string; content: unknown }>; tools?: Array<{ name: string }> }, res: ServerResponse): void {
-    const text = (c: unknown) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p.text ?? "").join("") : "");
-    const tools = (body.tools ?? []).map((t) => t.name);
-    const last = body.messages.at(-1)?.content;
-    const final = tools.find((t) => t.includes("final_answer"));
-    let block: { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: Record<string, string> };
-    if (Array.isArray(last) && last.some((p: { type?: string }) => p.type === "tool_result")) block = { type: "text", text: "Done." };
-    else if (!final) {
-      res.writeHead(400, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `no final_answer tool among ${tools.join(", ")}` } }));
-    } else {
-      const prompt = body.messages.filter((m) => m.role === "user").map((m) => text(m.content)).join("\n");
-      this.turns.push({ model: body.model, system: text(body.system), prompt, tools });
-      block = { type: "tool_use", id: `toolu_${this.turns.length}`, name: final, input: this.decide(prompt) };
-    }
-    const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
-    if (!body.stream) {
-      res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model: body.model, content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 20 } }));
-    }
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    const event = (type: string, data: Record<string, unknown> = {}) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
-    event("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1 } } });
-    if (block.type === "tool_use") {
-      event("content_block_start", { index: 0, content_block: { ...block, input: {} } });
-      event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
-    } else {
-      event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
-      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: block.text } });
-    }
-    event("content_block_stop", { index: 0 });
-    event("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 20 } });
-    event("message_stop");
-    res.end();
-  }
-
   /** What the model "writes" for the mail it answers. */
   decide(prompt: string): Record<string, string> {
     const thread = prompt.slice(prompt.indexOf("<thread"));
@@ -978,7 +938,6 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: `the gateway refused the run link: ${(e as Error).message}` } }));
       }
-      if ((req.url ?? "").startsWith("/anthropic/")) return model.anthropic(JSON.parse(Buffer.concat(chunks).toString("utf8")), res);
       const up = await fetch(`${model.base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: Buffer.concat(chunks) });
       res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" });
       res.end(Buffer.from(await up.arrayBuffer()));
@@ -1075,7 +1034,8 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const res = await strut.app.request("/secrets/GOOGLE_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: T.deployment }) });
     assert.ok(res.status < 300, await res.text());
     // The box's model: a provider strut reaches through its secrets, here the fake.
-    for (const [name, value] of [["MAPLE_API_KEY", "fake-model-key"], ["MAPLE_BASE_URL", `${model.base}/v1`]]) {
+    // The box's default model, as an admin picks one on stadeum's Models page: the fake, under another name.
+    for (const [name, value] of [["MAPLE_API_KEY", "fake-model-key"], ["MAPLE_BASE_URL", `${model.base}/v1`], ["STRUT_DEFAULT_MODEL", "maple/fake-default"]]) {
       const set = await strut.app.request(`/secrets/${name}`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
       assert.ok(set.status < 300, await set.text());
     }
@@ -1205,7 +1165,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(capped.filter((c) => c.run === own.runId).map((c) => c.usd), [DEFAULT_CAP], "the cap of the workflow the run is");
   });
 
-  it("sends on the schedule under the person's Send choice: from their own mailbox, as them, at reply's own model and cap", async () => {
+  it("sends on the schedule under the person's Send choice: from their own mailbox, as them, on the box's default model, under reply's cap", async () => {
     assert.equal((await ok(page("gil")("stadeum/gmail/save", { choice: "anyone" }))).choice, "anyone");
     const una = google.add(T.gil, { from: "Una Park <una@stranger.example>", subject: "Monday", text: "Are you free on Monday?" });
     const turns = model.turns.length;
@@ -1213,12 +1173,50 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const runs = await fire();
     assert.deepEqual(runs.map((r) => [r.start.principal, r.summary.status]).sort(), [["gil", "success"], ["hal", "success"]]);
     const gils = runs.find((r) => r.start.principal === "gil")!;
-    assert.deepEqual(model.turns.slice(turns).map((t) => t.model), ["claude-sonnet-5-5"], "reply's own model: a schedule passes no params");
+    assert.deepEqual(model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, "")), ["fake-default"], "the box's default: a schedule passes no params, and reply names no model");
     assert.deepEqual(capped.filter((c) => c.run === gils.runId).map((c) => c.usd), [1], "under reply's cap");
     const sent = [...gil.messages.values()].filter((x) => x.threadId === una.threadId && x.labelIds.includes("SENT"));
     assert.deepEqual(sent.map((x) => [get(x.headers, "From"), get(x.headers, "To")]), [['"Gil Park" <gil@acme.example>', '"Una Park" <una@stranger.example>']], "from Gil's own address, to Una alone");
     assert.deepEqual(since(n).filter((c) => c.url.endsWith("/drafts/send")).map((c) => c.auth), [`Bearer ${T.gil}`], "sent with Gil's own token, once");
     assert.ok(since(n).every((c) => c.auth === `Bearer ${T.gil}` || c.auth === `Bearer ${T.hal}`), "each run on its own person's mailbox");
+  });
+
+  it("names no model of its own: none or a blank one is the box's default; with no default, a reply to write fails the run plainly, and waits", async () => {
+    const run = async (since: string, params?: Record<string, unknown>) => {
+      const r = await strut.run(REPLY, { since }, { actor: "gil", principal: "gil", ...(params ? { params } : {}) });
+      seen.push(JSON.stringify(r));
+      return r;
+    };
+    const setDefault = async (value: string | null) => {
+      const res = await strut.app.request("/secrets/STRUT_DEFAULT_MODEL", value === null ? { method: "DELETE" } : { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value }) });
+      assert.ok(res.status < 300, await res.text());
+    };
+    const start = await run("");
+    assert.equal(start.status, "success", JSON.stringify(start.error));
+    google.add(T.gil, { from: "Vic Hale <vic@stranger.example>", subject: "Thursday", text: "Is Thursday good?" });
+    let turns = model.turns.length;
+    const blank = await run((start.output as any).since, { model: "" });
+    assert.equal(blank.status, "success", JSON.stringify(blank.error));
+    assert.deepEqual(model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, "")), ["fake-default"], "a blank model is none: the box's default, never a built-in one");
+
+    // No default on the box: the run fails before any model, and says what to set.
+    await setDefault(null);
+    try {
+      google.add(T.gil, { from: "Wes Park <wes@stranger.example>", subject: "Friday", text: "Is Friday good?" });
+      turns = model.turns.length;
+      const n = calls.length;
+      const failed = await run((blank.output as any).since);
+      assert.equal(failed.status, "error");
+      assert.match(JSON.stringify(failed.error), /no model to write replies with: choose the org default model on the Models page/);
+      assert.equal(model.turns.length, turns, "no model was asked");
+      assert.ok(!since(n).some((c) => c.method !== "GET"), "nothing written to Gmail");
+    } finally {
+      await setDefault("maple/fake-default");
+    }
+    // With a default again, the next run from the same place answers it.
+    const again = await run((blank.output as any).since);
+    assert.equal(again.status, "success", JSON.stringify(again.error));
+    assert.deepEqual(model.turns.slice(turns).map((t) => t.model.replace(/^maple\//, "")), ["fake-default"]);
   });
 
   it("says a person with no token of their own is not connected, though the deployment has one, and asks Google nothing", async () => {
@@ -1675,7 +1673,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const ids: string[] = await store.listRuns("stadeum/gmail/reply");
     const summaries = await Promise.all(ids.map((id) => store.getRunSummary("stadeum/gmail/reply", id)));
     assert.equal(summaries.filter((x: any) => x.principal === "fay").length, 4, "every run of fay's so far, the one with eight new messages among them");
-    for (const x of summaries) assert.deepEqual(Object.keys((x as any).output ?? {}), ["since"]);
+    for (const x of summaries) assert.deepEqual(Object.keys((x as any).output ?? {}), (x as any).status === "success" ? ["since"] : [], "since alone, or nothing for a failed run");
     const kept = JSON.stringify(summaries);
     for (const word of ["Tuesday", "invoice", "Bob", "@acme.example"]) assert.ok(!kept.includes(word), `no ${word} in a summary`);
   });

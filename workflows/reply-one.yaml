@@ -9,12 +9,12 @@ description: One message for `reply`. Gather what a reply is written from, ask t
 retain: 1d
 input:
   message: { type: string, description: "The message's id, from `look`" }
-params:
-  model: claude-sonnet-5-5
+# `params.model`, when a run is given one: else the box's default model
+# (stadeum's Models page), which `context` checks is set.
 steps:
   - id: context
     type: context
-    config: { message: "{{ input.message }}" }
+    config: { message: "{{ input.message }}", model: "{{ params.model }}" }
 
   - id: go
     type: if
@@ -25,7 +25,8 @@ steps:
     depends: go
     when: true
     config:
-      model: "{{ params.model }}"
+      # The model named, or none: then strut's own default, read per run.
+      model: "{{ context.model }}"
       toolFilter: ["none"]
       mcp: false
       maxSteps: 3

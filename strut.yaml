@@ -6,7 +6,11 @@ requires:
   # it; Disconnect revokes it at Google and deletes it. The steps read only
   # the person's own value (`secrets.own`), never a deployment's: a mailbox
   # is whoever's token the run has, and there is none for the box.
-  optional: [GOOGLE_TOKEN]
+  optional: [GOOGLE_TOKEN, STRUT_DEFAULT_MODEL]
+  # STRUT_DEFAULT_MODEL is the box's default model (stadeum's Models page,
+  # "Org default"), not a credential: Replies writes on it, and `context`
+  # reads its name to fail plainly when a box has none, rather than let
+  # strut's `agent` fall to a model nobody chose.
 provides:
   secrets: [GOOGLE_TOKEN]
 # `reply` every five minutes, once for each person who holds their own
