@@ -37,6 +37,20 @@ export function seamLink(page: string | undefined, strut: string | undefined): s
   return seam.href;
 }
 
+/**
+ * Gmail's own page for the person's drafts, or for one thread, in the
+ * account the app is connected to (`authuser`, when the address is known;
+ * else Gmail's first signed-in account). None for a thread id that is not
+ * one.
+ */
+export function gmailLink(address: string | undefined, where: "drafts" | { thread: string }): string | undefined {
+  if (where !== "drafts" && !/^[A-Za-z0-9_-]{1,128}$/.test(where.thread)) return undefined;
+  const url = new URL("https://mail.google.com/mail/");
+  if (address) url.searchParams.set("authuser", address);
+  url.hash = where === "drafts" ? "drafts" : `all/${where.thread}`;
+  return url.href;
+}
+
 const parse = (raw: string | undefined): URL | undefined => {
   if (!raw) return undefined;
   try {

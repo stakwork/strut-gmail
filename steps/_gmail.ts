@@ -443,17 +443,17 @@ async function inTurn<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R[]> 
   return out;
 }
 
-/** One message, whole; none when it is gone (deleted since it was listed). */
-export async function messageOf(ctx: Ctx, token: string, id: string): Promise<GMessage | undefined> {
-  const res = await gmail(ctx, token, `/messages/${encodeURIComponent(id)}`, { query: { format: "full" } });
+/** One message, whole, or (`minimal`) its id, thread, labels and time alone; none when it is gone (deleted since it was listed). */
+export async function messageOf(ctx: Ctx, token: string, id: string, format: "full" | "minimal" = "full"): Promise<GMessage | undefined> {
+  const res = await gmail(ctx, token, `/messages/${encodeURIComponent(id)}`, { query: { format } });
   if (res.status === 404) return undefined;
   if (!res.ok) throw refused(res, token, "show a message");
   return res.body as GMessage;
 }
 
-/** Messages by id, whole, those still there. */
-export async function messagesOf(ctx: Ctx, token: string, ids: string[]): Promise<GMessage[]> {
-  return (await inTurn(ids, (id) => messageOf(ctx, token, id))).filter((m): m is GMessage => !!m);
+/** Messages by id, those still there: whole, or `minimal`. */
+export async function messagesOf(ctx: Ctx, token: string, ids: string[], format: "full" | "minimal" = "full"): Promise<GMessage[]> {
+  return (await inTurn(ids, (id) => messageOf(ctx, token, id, format))).filter((m): m is GMessage => !!m);
 }
 
 /** The ids of the messages a Gmail search finds, up to `max`; `over` when there were more. */
@@ -470,17 +470,15 @@ export async function idsOf(ctx: Ctx, token: string, q: string, max: number): Pr
   return { ids, over: !!pageToken };
 }
 
-/** A thread's messages, whole, oldest first. */
-export async function threadOf(ctx: Ctx, token: string, thread: string): Promise<GMessage[]> {
+/** A thread's messages, oldest first: whole, or their headers alone (`metadata`). */
+export async function threadOf(ctx: Ctx, token: string, thread: string, format: "full" | "metadata" = "full"): Promise<GMessage[]> {
   if (!isId(thread)) throw new Error(`not a thread's id: ${scrub(thread)}`);
-  const res = await gmail(ctx, token, `/threads/${encodeURIComponent(thread)}`, { query: { format: "full" } });
+  const res = await gmail(ctx, token, `/threads/${encodeURIComponent(thread)}`, { query: { format } });
   if (res.status === 404) throw new Error(`there is no thread ${thread} in your mailbox`);
   if (!res.ok) throw refused(res, token, "show the thread");
   const messages = ((res.body ?? {}) as { messages?: GMessage[] }).messages ?? [];
   return [...messages].sort((a, b) => timeOf(a) - timeOf(b));
 }
-
-export const LISTED = LISTED_MAX;
 
 /** A person's search, with drafts left out at Gmail's end too: a draft is not mail yet. */
 export const withoutDrafts = (search: string): string => (search.trim() ? `(${search.trim()}) -in:drafts` : "-in:drafts");
@@ -501,6 +499,36 @@ export interface Cursor {
 export function writeCursor(c: Cursor): string {
   const seen = [...c.seen].map(([id, at]) => `${id}@${at}`).join(",");
   return seen ? `${c.after};${seen}` : `${c.after}`;
+}
+
+/**
+ * Mail that matches `search` and came after `since`, oldest first, at most
+ * `NEW_MAX`, with where this look stopped (`new`'s rule, its README
+ * section). Read `full` for the message's shape, or `minimal` (id, thread,
+ * labels, time) for a caller that reads each message again itself. With no
+ * `since`, no mail and no call to Gmail: only where to start.
+ */
+export async function lookSince(ctx: Ctx, token: string, search: string, since: string | undefined, format: "full" | "minimal"): Promise<{ messages: GMessage[]; since: string; more: boolean }> {
+  const now = Date.now();
+  if (!since?.trim()) return { messages: [], since: writeCursor({ after: now, seen: new Map() }), more: false };
+  const cur = readCursor(since);
+  // Gmail's search takes seconds; a second early, and each message's own time decides.
+  const q = `${withoutDrafts(search)} after:${Math.max(0, Math.floor(cur.after / 1000) - 1)}`;
+  const { ids, over } = await idsOf(ctx, token, q, LISTED_MAX);
+  if (over) throw new Error(`more than ${LISTED_MAX} messages match since the last look: narrow the search`);
+  const fetched = await messagesOf(ctx, token, ids.filter((id) => !cur.seen.has(id)), format);
+  const fresh = fetched.filter((m) => timeOf(m) >= cur.after).sort((a, b) => timeOf(a) - timeOf(b) || (a.id ?? "").localeCompare(b.id ?? ""));
+  const drafts = fresh.filter(isDraft);
+  const mail = fresh.filter((m) => !isDraft(m));
+  const handed = mail.slice(0, NEW_MAX);
+  const left = mail[NEW_MAX];
+  // It looks back a while each time, since Gmail's search can see new mail
+  // late; and never past mail it has not handed over yet.
+  const after = Math.max(cur.after, Math.min(now - LOOK_BACK_MS, left ? timeOf(left) : Infinity));
+  const seen = new Map<string, number>();
+  for (const [id, at] of cur.seen) if (at >= after) seen.set(id, at);
+  for (const m of [...handed, ...drafts]) if (timeOf(m) >= after) seen.set(m.id!, timeOf(m));
+  return { messages: handed, since: writeCursor({ after, seen }), more: !!left };
 }
 
 export function readCursor(raw: string): Cursor {
@@ -624,16 +652,68 @@ export function rawOf(o: Outgoing): string {
   return Buffer.from(lines.join(CRLF) + CRLF + CRLF + body, "utf8").toString("base64url");
 }
 
-/** The mailbox's own From: its default send-as address and name, as Gmail's settings say. */
-export async function senderOf(ctx: Ctx, token: string): Promise<Address> {
+type SendAs = { sendAsEmail?: unknown; displayName?: unknown; isDefault?: unknown; isPrimary?: unknown };
+
+async function sendAsOf(ctx: Ctx, token: string): Promise<SendAs[]> {
   const res = await gmail(ctx, token, "/settings/sendAs");
   if (!res.ok) throw refused(res, token, "say which address mail goes out from");
-  const list = ((res.body ?? {}) as { sendAs?: Array<{ sendAsEmail?: unknown; displayName?: unknown; isDefault?: unknown; isPrimary?: unknown }> }).sendAs ?? [];
+  return ((res.body ?? {}) as { sendAs?: SendAs[] }).sendAs ?? [];
+}
+
+/** An address with its +tag taken off, lower case: Gmail delivers both to one mailbox. */
+export const plainAddress = (address: string): string => address.toLowerCase().replace(/\+[^@]*@/, "@");
+
+/** Every address the mailbox sends as, plain (`plainAddress`): whether mail went to it alone. */
+export async function ownAddressesOf(ctx: Ctx, token: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const s of await sendAsOf(ctx, token)) if (typeof s.sendAsEmail === "string" && isAddress(s.sendAsEmail)) out.add(plainAddress(s.sendAsEmail));
+  return out;
+}
+
+/** The mailbox's own From: its default send-as address and name, as Gmail's settings say. */
+export async function senderOf(ctx: Ctx, token: string): Promise<Address> {
+  const list = await sendAsOf(ctx, token);
   const pick = list.find((s) => s.isDefault === true) ?? list.find((s) => s.isPrimary === true) ?? list[0];
   const address = typeof pick?.sendAsEmail === "string" ? pick.sendAsEmail : "";
   if (!isAddress(address)) throw new Error("Gmail's settings name no address to send from");
   const name = typeof pick?.displayName === "string" ? oneLine(pick.displayName).slice(0, 200) : "";
   return name ? { address, name } : { address };
+}
+
+/** A draft written over: Gmail's `drafts.update`, which keeps its id. `false` when it is gone (sent or deleted). */
+export async function updateDraft(ctx: Ctx, token: string, draft: string, raw: string, threadId: string | undefined): Promise<{ draft: string; message: string; thread: string } | false> {
+  if (!isId(draft)) return false;
+  const res = await gmail(ctx, token, `/drafts/${encodeURIComponent(draft)}`, { method: "PUT", body: { id: draft, message: { raw, ...(threadId ? { threadId } : {}) } } });
+  if (res.status === 404) return false;
+  if (!res.ok) throw refused(res, token, "change the draft");
+  return draftOut(res.body);
+}
+
+/** A new draft: Gmail's `drafts.create`. */
+export async function createDraft(ctx: Ctx, token: string, raw: string, threadId: string | undefined): Promise<{ draft: string; message: string; thread: string }> {
+  const res = await gmail(ctx, token, "/drafts", { method: "POST", body: { message: { raw, ...(threadId ? { threadId } : {}) } } });
+  if (!res.ok) throw refused(res, token, "keep the draft");
+  return draftOut(res.body);
+}
+
+function draftOut(body: unknown): { draft: string; message: string; thread: string } {
+  const b = (body ?? {}) as { id?: unknown; message?: { id?: unknown; threadId?: unknown } };
+  return { draft: String(b.id ?? ""), message: String(b.message?.id ?? ""), thread: String(b.message?.threadId ?? "") };
+}
+
+/** The ids of every draft in the mailbox, up to 2,500. */
+export async function draftIdsOf(ctx: Ctx, token: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const res = await gmail(ctx, token, "/drafts", { query: { maxResults: 500, ...(pageToken ? { pageToken } : {}) } });
+    if (!res.ok) throw refused(res, token, "list your drafts");
+    const body = (res.body ?? {}) as { drafts?: Array<{ id?: unknown }>; nextPageToken?: unknown };
+    for (const d of body.drafts ?? []) if (isId(d.id)) ids.add(d.id);
+    pageToken = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : undefined;
+    if (!pageToken) break;
+  }
+  return ids;
 }
 
 /** What `draft` and `send` take. */

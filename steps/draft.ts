@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { asCtx, compose, gmail, needToken, refused } from "./_gmail.js";
+import { asCtx, compose, createDraft, needToken } from "./_gmail.js";
 import { compose as input } from "./_shape.js";
 
 const address = z.object({ address: z.string(), name: z.string().optional() });
@@ -17,9 +17,6 @@ export default defineStep({
     const c = asCtx(ctx);
     const token = await needToken(c);
     const out = await compose(c, token, cfg);
-    const res = await gmail(c, token, "/drafts", { method: "POST", body: { message: { raw: out.raw, ...(out.threadId ? { threadId: out.threadId } : {}) } } });
-    if (!res.ok) throw refused(res, token, "keep the draft");
-    const body = (res.body ?? {}) as { id?: unknown; message?: { id?: unknown; threadId?: unknown } };
-    return { draft: String(body.id ?? ""), message: String(body.message?.id ?? ""), thread: String(body.message?.threadId ?? ""), to: out.to };
+    return { ...(await createDraft(c, token, out.raw, out.threadId)), to: out.to };
   },
 });

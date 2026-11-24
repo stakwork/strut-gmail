@@ -1,5 +1,5 @@
 import { z, defineStep } from "strut";
-import { LISTED, LOOK_BACK_MS, NEW_MAX, asCtx, idsOf, isDraft, mailOf, messagesOf, needToken, readCursor, timeOf, withoutDrafts, writeCursor } from "./_gmail.js";
+import { asCtx, lookSince, mailOf, needToken } from "./_gmail.js";
 import { mail } from "./_shape.js";
 
 export default defineStep({
@@ -20,26 +20,7 @@ export default defineStep({
   }),
   async run(cfg, ctx) {
     const c = asCtx(ctx);
-    const token = await needToken(c);
-    const now = Date.now();
-    if (!cfg.since?.trim()) return { messages: [], since: writeCursor({ after: now, seen: new Map() }) };
-    const cur = readCursor(cfg.since);
-    // Gmail's search takes seconds; a second early, and each message's own time decides.
-    const q = `${withoutDrafts(cfg.search)} after:${Math.max(0, Math.floor(cur.after / 1000) - 1)}`;
-    const { ids, over } = await idsOf(c, token, q, LISTED);
-    if (over) throw new Error(`more than ${LISTED} messages match since the last look: narrow the search`);
-    const fetched = await messagesOf(c, token, ids.filter((id) => !cur.seen.has(id)));
-    const fresh = fetched.filter((m) => timeOf(m) >= cur.after).sort((a, b) => timeOf(a) - timeOf(b) || (a.id ?? "").localeCompare(b.id ?? ""));
-    const drafts = fresh.filter(isDraft);
-    const mailIn = fresh.filter((m) => !isDraft(m));
-    const handed = mailIn.slice(0, NEW_MAX);
-    const left = mailIn[NEW_MAX];
-    // It looks back a while each time, since Gmail's search can see new mail
-    // late; and never past mail it has not handed over yet.
-    const after = Math.max(cur.after, Math.min(now - LOOK_BACK_MS, left ? timeOf(left) : Infinity));
-    const seen = new Map<string, number>();
-    for (const [id, at] of cur.seen) if (at >= after) seen.set(id, at);
-    for (const m of [...handed, ...drafts]) if (timeOf(m) >= after) seen.set(m.id!, timeOf(m));
-    return { messages: handed.map(mailOf), since: writeCursor({ after, seen }), ...(left ? { more: true } : {}) };
+    const out = await lookSince(c, await needToken(c), cfg.search, cfg.since, "full");
+    return { messages: out.messages.map(mailOf), since: out.since, ...(out.more ? { more: true } : {}) };
   },
 });

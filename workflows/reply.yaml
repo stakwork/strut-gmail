@@ -1,0 +1,48 @@
+description: Answer the person's new mail with drafts in their Gmail, as the Mail Replies pages and their own instructions say.
+# Runs as the person, on their own mailbox. A schedule hands it where its
+# last run stopped: `{ since: "{{ last.output.since }}" }`. With Replies off
+# it reads no mail and hands back an empty `since`, so turning Replies on
+# again starts from then, with no backlog.
+#
+# A schedule runs it every five minutes for each person, and every run is
+# kept, so one that finds no new mail is three steps and one call to Gmail:
+# `look` (ids alone), a `foreach` over nothing, and the `pack` whose output
+# is `{ since }` alone. That output is what stays in the run's summary once
+# `retain` takes the log: never a message. The log goes after a day
+# (ruling 12 of stadeum's plans/gmail.md).
+#
+# Every word the model reads is a page's (`Mail Replies` and the pages
+# under it) or the person's own: this file holds none. What may be written,
+# to whom, and when to stand down is the steps'.
+retain: 1d
+input:
+  since: { type: string, default: "", description: "Where the last run stopped: its output's `since`" }
+params:
+  # Any model the box has a key for.
+  model: claude-sonnet-5-5
+steps:
+  - id: look
+    type: look
+    config: { since: "{{ input.since }}" }
+
+  # One message at a time, oldest first. Mail from a list or a machine, and
+  # the mailbox's own, stands down in `context` and `answer`: no search and
+  # no page loosens that.
+  - id: each
+    type: foreach
+    depends: look
+    config:
+      items: "{{ look.messages }}"
+      body:
+        id: message
+        type: subflow
+        config:
+          workflow: reply-one
+          input: { message: "{{ $current }}" }
+          params: { model: "{{ params.model }}" }
+
+  - id: done
+    type: pack
+    depends: [look, each]
+    config:
+      since: "{{ look.since }}"

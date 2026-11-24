@@ -1,11 +1,14 @@
 title: Gmail
-description: Connect your Google account for mail.
+description: Connect your Google account. Jamie answers your mail with drafts.
 icon: mail
 entry: src/App.tsx
 grants:
   workflows: []
   # `me` reads the viewer's own connection; `disconnect` ends it, and only
-  # from this app.
-  steps: [stadeum/gmail/me, stadeum/gmail/disconnect]
+  # from this app. `settings` and `waiting` read the viewer's Replies (what
+  # they chose, the drafts left, the threads handed to them); `save`
+  # changes their choices, and only from this app. The page reaches the
+  # app's database through these steps alone, never with SQL of its own.
+  steps: [stadeum/gmail/me, stadeum/gmail/disconnect, stadeum/gmail/settings, stadeum/gmail/save, stadeum/gmail/waiting]
   sqlite: false
   automations: []

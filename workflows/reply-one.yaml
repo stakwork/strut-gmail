@@ -1,0 +1,47 @@
+description: One message for `reply`. Gather what a reply is written from, ask the model, then leave a draft or hand the thread to the person.
+# The model has no tools: no built-ins, no steps, no MCP servers, no
+# session. It reads what `context` gathered and gives back `reply`,
+# `handoff`, or neither; `answer` acts on it, to the recipient the step
+# works out. Its instructions are the pages'.
+#
+# Run by `reply`, it is a part of that run and its log. `retain` here is
+# for a run of one message started by hand: a day, as `reply`'s.
+retain: 1d
+input:
+  message: { type: string, description: "The message's id, from `look`" }
+params:
+  model: claude-sonnet-5-5
+steps:
+  - id: context
+    type: context
+    config: { message: "{{ input.message }}" }
+
+  - id: go
+    type: if
+    config: { cond: "{{ context.go }}" }
+
+  - id: written
+    type: agent
+    depends: go
+    when: true
+    config:
+      model: "{{ params.model }}"
+      toolFilter: ["none"]
+      mcp: false
+      maxSteps: 3
+      system: "{{ context.system }}"
+      prompt: "{{ context.prompt }}"
+      schema:
+        type: object
+        additionalProperties: false
+        properties:
+          reply: { type: string }
+          handoff: { type: string }
+
+  - id: answer
+    type: answer
+    depends: written
+    config:
+      message: "{{ input.message }}"
+      reply: "{{ written.object.reply }}"
+      handoff: "{{ written.object.handoff }}"
