@@ -36,9 +36,11 @@ jobs:
           ref: main
           path: strut
 
+      # The Node strut asks for: its own .nvmrc, read from its checkout, so a
+      # bump in strut moves this check with it.
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version-file: strut/.nvmrc
           cache: yarn
           cache-dependency-path: |
             strut/yarn.lock

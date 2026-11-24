@@ -214,8 +214,22 @@ The model never names anyone, and nothing is attached. `answer` records
 what it did with each message, so it never acts on one twice. These
 rules are in the steps, so no search, page or instruction loosens them.
 
-`params.model` is `claude-sonnet-5-5`; any model the box has a key for
-will do.
+**The model is the box's default:** the org default an admin picks on
+stadeum's Models page (`STRUT_DEFAULT_MODEL`). `reply` and `reply-one`
+name no model, so strut's `agent` runs on it, read per run, and changing
+the default changes Replies. A run may name one instead, as
+`params.model`: a person's own workflow around `reply`, or the tests' fake.
+A blank one counts as none (`"{{ params.model || undefined }}"`: strut
+takes `""` as a model's name).
+
+**A model call that fails loses no mail.** Whatever the cause (the
+gateway refusing, the cap reached, the provider down), the `agent`
+step fails, and with it that message's `reply-one`, the `foreach`, which
+stops at the first failure, and the run. A failed run hands back no
+`since`, and a schedule gives the next run its last successful run's. So
+the next run looks from the same place: what was answered stands down as
+answered, and the failed message and the mail after it are answered then,
+each once.
 
 ### Send
 
@@ -362,8 +376,8 @@ schedules:
   run.
 - An admin turns it on or off, for everyone at once. Strut's Automate tab
   shows it as "Runs as each person with GOOGLE_TOKEN".
-- A schedule passes no `params`, so a scheduled run uses `reply`'s
-  `params.model`.
+- A schedule passes no `params`, so a scheduled run writes on the box's
+  default model.
 
 `reply` takes `since` and hands it back, so a person may also run it from
 a workflow of their own, on a schedule of their own:
@@ -638,8 +652,17 @@ says to open Gmail in Stadeum.
   figure, so `ask` sets none.
 - **The $1 cap on `reply` holds only behind the Mothership's gateway.** A
   box that calls a model with its own key has no cap.
-- **A scheduled `reply` always uses `claude-sonnet-5-5`.** A schedule
-  passes no `params`, and strut has no way to give one another model.
+- **Replies costs what the box's default model costs.** A pricier default
+  makes every reply pricier; the $1 cap on a run of `reply` is what bounds
+  it.
+- **With no default model, strut's own fallback answers,** as for any
+  `agent` step: `anthropic/claude-sonnet-5-5`, through the gateway on the
+  person's key. Stadeum sets a default once any provider has a key, so
+  only a box with none gets here, and there the gateway refuses the call
+  and the mail waits.
+- **A message whose model call fails every time holds back the mail after
+  it.** Each run stops at it and keeps its `since`, so nothing is lost,
+  but nothing after it is answered until that call succeeds.
 
 ## What Google's documentation says
 
@@ -824,9 +847,9 @@ and reads the cap on each model call of a run of `reply`.
   Without the two settings a connection works for an hour, then the steps
   say to connect again. Stadeum's `scripts/init-env.sh` makes them.
 - **Strut at `strut.<box>`, beside Stadeum at `<box>`**, for Connect (above).
-- **A model key**, for Replies: `reply`'s `params.model` is
-  `claude-sonnet-5-5`, through whatever key the box has for it. A
-  scheduled run always uses it: a schedule passes no `params`.
+- **A default model**, for Replies: the org default on stadeum's Models
+  page (`STRUT_DEFAULT_MODEL`). Without one, strut's own fallback answers
+  ("Limits").
 - **Strut's jobs**, for Email Jamie and Asked in a chat: its `job`
   workflow, and a model for the job agent.
 
@@ -861,8 +884,10 @@ The deployment is given a `GOOGLE_TOKEN`, to see that no step ever sends
 it.
 
 The model is a fake too: an OpenAI-compatible server that the box's
-`maple` provider reaches through the deployment's `MAPLE_BASE_URL`, with
-`reply` run at `params.model: maple/fake-replier`. So `reply-one` runs
+`maple` provider reaches through the deployment's `MAPLE_BASE_URL`. The
+box's default model is `maple/fake-default`, and most runs name
+`params.model: maple/fake-replier`, so a test sees which one was asked.
+So `reply-one` runs
 strut's real `agent` step. The fake answers each turn by calling
 `final_answer`, deciding from the last mail in the thread, and records the
 system prompt, the prompt and the tools it was offered, which the test
@@ -873,9 +898,7 @@ directory.
 One person's model calls go through a stand-in for the box's gateway
 instead. Strut's Mothership holds an authorization for them, made with a
 test key. The stand-in checks each call's run link, notes the cap it
-carries, and passes the call to the fake model. It answers in Anthropic's
-format too, so a scheduled run, at `reply`'s own `claude-sonnet-5-5`, can
-write and send a reply.
+carries, and passes the call to the fake model.
 
 Jobs run on strut's own `job` workflow, its agent on the same fake model
 (`createStrut({ job: { model: "maple/fake-jobber" } })`): it answers with a
@@ -887,7 +910,8 @@ STRUT_DIR=../strut npm test
 ```
 
 `STRUT_DIR` is a strut checkout with its install (`yarn install
---frozen-lockfile --ignore-scripts`, and the same in `kit/`). With no built
+--frozen-lockfile --ignore-scripts`, and the same in `kit/`), on the Node
+its `.nvmrc` names. With no built
 `kit/vendor` there, the test builds the kit's vendor layer itself; a stale
 one fails the app's build. `.github/workflows/checks.yml` runs it on every
 pull request and push to `main`, against strut's `main`.
