@@ -20,7 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { gmailLink, seamLink } from "./links";
+import { gmailLink, jamieAddress, seamLink } from "./links";
 
 // The package's steps, by their full names.
 const ME = "stadeum/gmail/me";
@@ -47,6 +47,7 @@ interface Disconnected {
 type Choice = "draft" | "written" | "anyone";
 interface Settings {
   replies: boolean;
+  ask: boolean;
   choice: Choice;
   search: string;
   instructions: string;
@@ -307,6 +308,26 @@ function Replies({ address }: { address?: string }) {
           </CardContent>
         )}
       </Card>
+
+      {s && (
+        <Card className="gap-3 py-4">
+          <CardHeader className="flex flex-row items-start justify-between gap-3 px-4">
+            <div className="flex flex-col gap-1">
+              <CardTitle className="text-base">
+                <Label htmlFor="ask">Email Jamie</Label>
+              </CardTitle>
+              <p className="text-sm text-muted-foreground">Write to yourself and get the answer back</p>
+            </div>
+            <Switch id="ask" checked={s.ask} onCheckedChange={(checked) => void save({ ask: checked })} />
+          </CardHeader>
+          {s.ask && jamieAddress(address) && (
+            <CardContent className="flex flex-wrap items-baseline gap-2 px-4 text-sm">
+              <span className="text-muted-foreground">Write to</span>
+              <span className="font-medium select-all">{jamieAddress(address)}</span>
+            </CardContent>
+          )}
+        </Card>
+      )}
 
       {s && on && (
         <Card className="gap-3 py-4">

@@ -1,0 +1,42 @@
+description: One turn for `ask`. Start the thread's job, or continue it, with the person's words, and keep which job and run it is.
+# strut's own job/start and job/continue, as the person: the job runs with
+# their own tokens and tools. Each launches once, even across a resume.
+#
+# Run by `ask`, it is a part of that run and its log. `retain` here is for a
+# run of one turn started by hand: a day, as `ask`'s.
+retain: 1d
+input:
+  message: { type: string, description: "The person's message" }
+  thread: { type: string }
+  job: { type: string, default: "", description: "The thread's job to continue; empty to start one" }
+  title: { type: string, default: "" }
+  prompt: { type: string, description: "The person's own words" }
+steps:
+  - id: fresh
+    type: if
+    config: { cond: "{{ !input.job }}" }
+
+  - id: started
+    type: job/start
+    depends: fresh
+    when: true
+    config:
+      title: "{{ input.title || 'Email' }}"
+      prompt: "{{ input.prompt }}"
+
+  - id: continued
+    type: job/continue
+    depends: fresh
+    when: false
+    config:
+      job: "{{ input.job }}"
+      prompt: "{{ input.prompt }}"
+
+  - id: kept
+    type: ask-started
+    depends: [started, continued]
+    config:
+      message: "{{ input.message }}"
+      thread: "{{ input.thread }}"
+      job: "{{ started?.job || input.job }}"
+      run: "{{ started?.runId || continued?.runId }}"

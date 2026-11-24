@@ -1,0 +1,41 @@
+description: Email Jamie. Mail the person sends to their own +jamie address starts a job, and the job's answer comes back in the thread.
+# Runs as the person, on their own mailbox. A schedule hands it where its
+# last run stopped: `{ since: "{{ last.output.since }}" }`. Each run:
+#   - `ask-look` answers each turn whose job run has ended since the last
+#     look, in its thread, to the person's own address and nobody else;
+#     then finds the mail the mailbox itself sent (never mail from outside):
+#     a new thread to the +jamie address starts a job, and the person's
+#     message in a thread that is already a job continues it;
+#   - `ask-turn` starts or continues each job, with strut's own job/start
+#     and job/continue, as the person.
+# Strut can't tell a package's workflow that a job ended, so a job's answer
+# goes out on the first look after its end: up to five minutes later.
+#
+# A run that finds no new mail and no job ended is three steps and one
+# call to Gmail. Its output, all its summary keeps once `retain` takes the
+# log, is `{ since }` alone (ruling 12).
+retain: 1d
+input:
+  since: { type: string, default: "", description: "Where the last run stopped: its output's `since`" }
+steps:
+  - id: look
+    type: ask-look
+    config: { since: "{{ input.since }}" }
+
+  - id: each
+    type: foreach
+    depends: look
+    config:
+      items: "{{ look.turns }}"
+      body:
+        id: turn
+        type: subflow
+        config:
+          workflow: ask-turn
+          input: "{{ $current }}"
+
+  - id: done
+    type: pack
+    depends: [look, each]
+    config:
+      since: "{{ look.since }}"

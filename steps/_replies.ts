@@ -64,6 +64,8 @@ export const CHOICES: readonly Choice[] = ["draft", "written", "anyone"];
 export interface Settings {
   /** Replies is on: `reply` answers this person's mail. */
   replies: boolean;
+  /** Email Jamie is on: `ask` takes mail the person sends to their own +jamie address. Off until they turn it on. */
+  ask: boolean;
   /** Who gets a reply without a click. */
   choice: Choice;
   /** The mail it answers: a Gmail search. */
@@ -74,10 +76,10 @@ export interface Settings {
 
 /** A person's choices; the defaults until they change one, so Replies is on from the moment they connect. */
 export function settingsOf(db: DatabaseSync, actor: string): Settings {
-  const row = db.prepare("SELECT replies, choice, search, instructions FROM people WHERE actor = ?").get(actor) as { replies: number; choice: string; search: string; instructions: string } | undefined;
-  if (!row) return { replies: true, choice: "draft", search: DEFAULT_SEARCH, instructions: "" };
+  const row = db.prepare("SELECT replies, ask, choice, search, instructions FROM people WHERE actor = ?").get(actor) as { replies: number; ask: number; choice: string; search: string; instructions: string } | undefined;
+  if (!row) return { replies: true, ask: false, choice: "draft", search: DEFAULT_SEARCH, instructions: "" };
   const choice = (CHOICES as readonly string[]).includes(row.choice) ? (row.choice as Choice) : "draft";
-  return { replies: row.replies === 1, choice, search: row.search, instructions: row.instructions };
+  return { replies: row.replies === 1, ask: row.ask === 1, choice, search: row.search, instructions: row.instructions };
 }
 
 /** Change some of a person's choices. An empty search is the default one. */
@@ -85,9 +87,9 @@ export function saveSettings(db: DatabaseSync, actor: string, patch: Partial<Set
   const next = { ...settingsOf(db, actor), ...patch };
   next.search = next.search.trim() || DEFAULT_SEARCH;
   db.prepare(
-    "INSERT INTO people (actor, replies, choice, search, instructions, updated_at) VALUES (:actor, :replies, :choice, :search, :instructions, :at) " +
-      "ON CONFLICT (actor) DO UPDATE SET replies = excluded.replies, choice = excluded.choice, search = excluded.search, instructions = excluded.instructions, updated_at = excluded.updated_at",
-  ).run({ actor, replies: next.replies ? 1 : 0, choice: next.choice, search: next.search, instructions: next.instructions, at: new Date().toISOString() });
+    "INSERT INTO people (actor, replies, ask, choice, search, instructions, updated_at) VALUES (:actor, :replies, :ask, :choice, :search, :instructions, :at) " +
+      "ON CONFLICT (actor) DO UPDATE SET replies = excluded.replies, ask = excluded.ask, choice = excluded.choice, search = excluded.search, instructions = excluded.instructions, updated_at = excluded.updated_at",
+  ).run({ actor, replies: next.replies ? 1 : 0, ask: next.ask ? 1 : 0, choice: next.choice, search: next.search, instructions: next.instructions, at: new Date().toISOString() });
   return next;
 }
 

@@ -3,11 +3,11 @@
 Gmail for Stadeum. Each person connects their own Google account. Then any
 workflow on the box can read, search, draft and send their mail, as them.
 
-This is work items 4 to 6 of stadeum's `plans/gmail.md`: Connect,
+This is work items 4 to 7 of stadeum's `plans/gmail.md`: Connect,
 Disconnect and the mail steps; **Replies**, the ready-made `reply`
-workflow and the app's Replies card; and **Send**, replies that go out
-without a click when the person chooses so. `ask` (item 7) and the job
-agent's mail tools (item 8) come later.
+workflow and the app's Replies card; **Send**, replies that go out without
+a click when the person chooses so; and **Email Jamie**, the ready-made
+`ask` workflow. The job agent's mail tools (item 8) come later.
 
 Three rules hold in every step (the plan's §6):
 
@@ -44,8 +44,13 @@ Three rules hold in every step (the plan's §6):
 | `steps/_replies.ts` | What the Replies steps share: the person, the app's database, the pages, when not to answer, how the mail is shown |
 | `workflows/reply.yaml` | **`reply`**: the person's new mail, one message at a time |
 | `workflows/reply-one.yaml` | One message: `context`, the model, `answer` |
+| `workflows/ask.yaml` | **`ask`**: Email Jamie. Answers the jobs that ended, then takes the person's new mail to Jamie |
+| `workflows/ask-turn.yaml` | One turn: strut's `job/start` or `job/continue`, then `ask-started` |
+| `steps/ask-look.ts` | Email Jamie's look: answers each turn whose job ended, then finds the mail the mailbox sent to Jamie |
+| `steps/ask-started.ts` | Keeps which job a thread is, and which run a turn is: ids alone |
+| `steps/_ask.ts` | What the Email Jamie steps share: the +jamie address, the answer's mark, the turns, what an answer says |
 | `concepts/Mail Replies.md` | How to answer: tone, length, what to hand to the person, when to say nothing |
-| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`) |
+| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`, `db/002-send.sql`, `db/003-ask.sql`) |
 
 ## The mail steps
 
@@ -389,6 +394,14 @@ the app, every row keyed by the person's strut actor:
   handoff's reason, and why a reply that could have been sent was held
   back.
 
+For Email Jamie, `people` also keeps whether it is on, and:
+
+- `asks`: which job a thread is;
+- `ask_turns`: for each turn, the person's message, its thread, the job
+  and the job's run, where it stands (`waiting`, `running`, `sending`,
+  `answered`), the answer's draft while it goes out, the answer's message,
+  and whether the job's turn failed.
+
 No mail, and no address. The page reads each Needs you row's sender and
 subject, and each Sent for you row's sender and first line, from Gmail
 when it shows them, with the person's own token. The
@@ -401,6 +414,90 @@ from a page's call or a run no page started alike.
 - `settings`, `waiting`, `context` and `answer` are anyone's, as
   themselves: a workflow, a page that grants them, an agent. Each acts on
   the run's person's own mailbox and rows.
+
+## Email Jamie
+
+A person writes to their own address with `+jamie` in it, as to anyone:
+`kai+jamie@acme.example`. Jamie does the work as a job, and the answer
+comes back in the same thread. A reply in the thread continues the same
+job. It is off until the person turns it on (the plan's §4.4).
+
+### `ask`
+
+`workflows/ask.yaml`, run as the person, on their own mailbox, every five
+minutes once a schedule runs it:
+
+1. **`ask-look`** first answers each turn whose job run has ended since
+   the last look, then looks for the person's new mail to Jamie, and gives
+   back the turns to start or continue.
+2. For each turn, **`ask-turn`**: strut's own **`job/start`** for a new
+   thread, or **`job/continue`** for one that is already a job, with the
+   person's words, as the person. So the job runs with their own tokens
+   and tools. Then **`ask-started`** keeps which job and run the turn is.
+3. A last `pack` hands back `{ since }`.
+
+**On the next look after a job ends.** Strut can't tell a package's
+workflow that a job ended (stakwork/strut: a job's end goes to its
+launching run's HTTP callback, or wakes a conversation). So each run of
+`ask` reads its open turns' jobs with strut's `job/get`, and answers each
+whose run is over: up to five minutes after it ended. A run still going is
+left alone. A hook that tells a workflow a job ended is in the plan's
+Later; it would only make the answer sooner.
+
+### Whose mail
+
+- **Only mail the mailbox itself sent:** Gmail's `SENT` label, which mail
+  from outside can't carry ("What Google's documentation says"). `ask`
+  searches `from:me` and keeps what is `mine`. Mail anyone else sends to
+  the `+jamie` address starts nothing, whatever it says, and so does a
+  message whose `From` names the person but that Gmail did not send.
+- **A new job:** a message to the `+jamie` address in a thread that is no
+  job yet. Its subject is the job's title, and its subject and text are
+  the brief.
+- **A follow-up:** any message of the person's in a thread that is already
+  a job. Replying to an answer sends to their own address, not to `+jamie`,
+  and it continues the job all the same. The job gets their own words:
+  the quoted mail under Gmail's "On … wrote:" line, and lines starting
+  with `>`, are left out.
+- **One turn at a time in a thread.** A follow-up that comes while the
+  thread's last turn is still running waits, and continues the job on the
+  look after that turn is answered.
+
+### The answer
+
+- **To the person's own address, and nobody else:** their Gmail address,
+  without `+jamie`, so an answer is never mistaken for mail to Jamie. From
+  their default send-as address, as a reply in the thread (its
+  `In-Reply-To` and `References`, `Re:` and the subject). The recipient is
+  the step's, never the job's.
+- **What it says:** the job's reply (`job/get`'s `text`), then its links,
+  each deliverable's and each hold's (a pull request, a pod): `title: url`
+  a line. A run that failed or was cancelled gets "Jamie couldn't finish
+  this", with strut's reason when it gives one.
+- **Once for a turn,** even when a run stops halfway. The answer is a draft
+  first, kept in the turn's record, then sent from that draft. A run that
+  stopped before the send sends that draft on the next look. One that
+  stopped after the send finds the draft gone, and the answer in the thread
+  by its mark, and sends nothing more.
+- **Its mark:** every answer carries `X-Jamie-Answer: <the job's run>`.
+  A later look knows `ask`'s own answers by it, and by the ids it keeps,
+  and never takes one for the person's mail.
+
+### What a run costs
+
+A run with no new mail and no turn waiting on a job is three steps and one
+call to Gmail, its `from:me` search: `ask-look`, a `foreach` over nothing,
+and the `pack`. It reads no job until one of the person's turns is open,
+and their address only when new mail of theirs needs it. With Email Jamie
+off it makes no call. Its output, all its summary keeps, is `{ since }`
+alone, and both workflows set `retain: 1d` (ruling 12).
+
+### Running `ask`
+
+As `reply` ("Running `reply`"): a workflow of the person's own runs
+`stadeum/gmail/ask` as a subflow, scheduled every five minutes with the
+input `{ "since": "{{ last.output.since }}" }`, until the package ships its
+own schedule for each person (`each: GOOGLE_TOKEN`).
 
 ## The Gmail app
 
@@ -441,6 +538,10 @@ Every person's own. For now it is one card:
   the sender it answered and the reply's first line. A row opens its
   thread in Gmail. "Nothing yet" when there is none, as under Draft. A
   person who goes back to Draft still sees what was sent before.
+
+**Email Jamie,** a switch, with "Write to yourself and get the answer back"
+under it. Off until the person turns it on. On, it shows **Write to** and
+the person's own address with `+jamie`.
 
 The page reads and changes these through `settings`, `save` and `waiting`
 alone. It is granted no SQL (`grants.sqlite: false`).
@@ -510,7 +611,13 @@ Still to check, with a real account:
   whose `Date` header is older than when Gmail got it;
 - how late Gmail's search sees new mail. `new` looks back ten minutes;
 - that mail the mailbox sends to itself carries both `SENT` and `INBOX`.
-  The fake does; `ask` (item 7) relies on it;
+  The fake does; `ask` relies on the `SENT`;
+- that Gmail keeps a message's own `X-` headers when it sends it: an
+  answer's `X-Jamie-Answer` mark. Without it, `ask` still knows its
+  answers by the ids it keeps, and only a run that stopped right after a
+  send would not;
+- that `from:me` finds mail sent from any of the person's send-as
+  addresses;
 - whether `messages.list` returns drafts. The steps add `-in:drafts` and
   drop `DRAFT` either way;
 - that a draft keeps its id while the person edits it in Gmail, and leaves
@@ -548,6 +655,20 @@ rests on. The test runs each one.
   through `ctx.registry` with its own context. `context/concept` would not
   do: it inlines the entry page alone, and lists the pages under it for an
   agent to open with a tool, which this agent does not have.
+
+For Email Jamie (`main` @897ceb8a), as the person:
+
+- **A job, started and continued.** strut's `job/start` and `job/continue`
+  launch through the run's jobs capability, which the package fence holds
+  to the run's own person. Each launches once at its step's path, even
+  across a resume, so `ask` runs one per turn, in a `foreach`.
+- **A job's result.** strut's `job/get` gives its runs and their status,
+  its latest reply (`text`), its holds' links (`urls`) and its
+  deliverables (`artifacts`).
+- **A job's end: not heard.** It goes to the launching run's HTTP
+  callback (a host's), or wakes a conversation (src/wake.ts). A package's
+  `on:` fires on graph writes, and `event:` entries are planned, not built.
+  So `ask` reads each open turn's job on its next look.
 
 Two more, in strut's `main` since 0d6ec1fe. The test fires the schedule,
 and reads the cap on each model call of a run of `reply`.
@@ -638,6 +759,11 @@ test key. The stand-in checks each call's run link, notes the cap it
 carries, and passes the call to the fake model. It answers in Anthropic's
 format too, so a scheduled run, at `reply`'s own `claude-sonnet-5-5`, can
 write and send a reply.
+
+Jobs run on strut's own `job` workflow, its agent on the same fake model
+(`createStrut({ job: { model: "maple/fake-jobber" } })`): it answers with a
+reply and a pull request's link, fails on "please fail", and waits while
+the test holds it, so a job is still running.
 
 ```bash
 STRUT_DIR=../strut npm test
