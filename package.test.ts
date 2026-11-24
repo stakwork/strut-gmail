@@ -1063,7 +1063,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(pkg.provides?.secrets, ["GOOGLE_TOKEN"]);
     const registry = strut.getRegistry();
     const effects = Object.fromEntries(STEPS.map((s) => [s.split("/").pop(), registry[s]?.effect]));
-    assert.deepEqual(effects, { me: "read", disconnect: "write", new: "read", read: "read", search: "read", draft: "write", send: "write", look: "read", context: "read", answer: "write", settings: "read", save: "write", waiting: "read", "ask-look": "write", "ask-started": "write" });
+    assert.deepEqual(effects, { me: "read", disconnect: "write", new: "read", read: "read", search: "read", draft: "write", send: "write", look: "read", context: "write", answer: "write", settings: "read", save: "write", waiting: "read", "ask-look": "write", "ask-started": "write" });
     const manifest = await strut.apps.manifestOf(APP);
     assert.deepEqual([...manifest.manifest.grants.steps].sort(), ["disconnect", "me", "save", "settings", "waiting"].map((s) => `stadeum/gmail/${s}`));
     assert.equal(manifest.manifest.grants.sqlite, false, "the page reaches its database through the steps alone");
@@ -1232,6 +1232,56 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.equal(again.status, "success", JSON.stringify(again.error));
     assert.deepEqual(modelsSince(turns), ["fake-default", "fake-default"], "Bravo and Charlie; Alpha stands down as answered");
     assert.deepEqual([a, b, c].map(answered), [1, 1, 1], "each answered once");
+  });
+
+  /** What Gil's mailbox has in a message's thread besides it: replies sent, and drafts. */
+  const afterIn = (m: Stored) => [...gil.messages.values()].filter((x) => x.threadId === m.threadId && x.id !== m.id);
+  const needsYouOf = async (who: string) => (await ok(page(who)("stadeum/gmail/waiting"))).needsYou as Array<{ thread: string; subject: string; reason: string }>;
+  const triesLeft = async (m: Stored) => (await strut.services.appDb.open(APP)).prepare("SELECT count FROM tries WHERE actor = 'gil' AND message = ?").get(m.id);
+
+  it("hands a mail that keeps failing to the person after three tries, and answers the mail after it, each once", async () => {
+    const since = ((await gilRun("")).output as any).since as string;
+    const stuck = google.add(T.gil, { from: "Pia Moss <pia@stranger.example>", subject: "Stuck", text: "Always fails: can we meet?", at: Date.now() });
+    const later = google.add(T.gil, { from: "Ray Moss <ray@stranger.example>", subject: "Later", text: "Is noon good?", at: Date.now() + 1 });
+    model.failOn = "Always fails";
+    try {
+      for (let run = 1; run <= 3; run++) {
+        const r = await gilRun(since);
+        assert.equal(r.status, "error", `run ${run}: the model failed`);
+        assert.deepEqual([afterIn(stuck).length, afterIn(later).length], [0, 0], `run ${run}: the mail after it waits`);
+      }
+      const turns = model.turns.length;
+      const handedOff = await gilRun(since);
+      assert.equal(handedOff.status, "success", JSON.stringify(handedOff.error));
+      assert.deepEqual(modelsSince(turns), ["fake-default"], "the later mail alone: no fourth try");
+      assert.deepEqual([afterIn(stuck).length, afterIn(later).length], [0, 1], "nothing sent or drafted for it; the later mail answered");
+      const row = (await needsYouOf("gil")).find((x) => x.thread === stuck.threadId);
+      assert.deepEqual([row?.subject, row?.reason], ["Stuck", "Jamie couldn't write a reply"], "under Needs you, in the person's words");
+      assert.equal(await triesLeft(stuck), undefined, "its tries are over");
+
+      const next = await gilRun((handedOff.output as any).since);
+      assert.equal(next.status, "success");
+      assert.equal(model.turns.length, turns + 1, "nothing more");
+      assert.deepEqual([afterIn(stuck).length, afterIn(later).length], [0, 1], "each once");
+    } finally {
+      model.failOn = undefined;
+    }
+  });
+
+  it("answers a mail that failed twice as usual, and never shows it as failed", async () => {
+    const since = ((await gilRun("")).output as any).since as string;
+    const flaky = google.add(T.gil, { from: "Sam Hale <sam.hale@stranger.example>", subject: "Flaky", text: "Twice fails: is two good?" });
+    model.failOn = "Twice fails";
+    try {
+      for (let run = 1; run <= 2; run++) assert.equal((await gilRun(since)).status, "error");
+    } finally {
+      model.failOn = undefined;
+    }
+    const r = await gilRun(since);
+    assert.equal(r.status, "success", JSON.stringify(r.error));
+    assert.equal(afterIn(flaky).length, 1, "answered, once");
+    assert.equal((await needsYouOf("gil")).find((x) => x.thread === flaky.threadId), undefined, "not under Needs you");
+    assert.equal(await triesLeft(flaky), undefined, "no count left behind");
   });
 
   it("says a person with no token of their own is not connected, though the deployment has one, and asks Google nothing", async () => {
@@ -2279,6 +2329,9 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const kept = JSON.stringify(handled);
     for (const word of ["@", "Tuesday", "invoice-42", "Lunch", "Bob"]) assert.ok(!kept.includes(word), `no ${word} kept`);
     assert.deepEqual(Object.keys(handled[0]!).sort(), ["actor", "at", "did", "draft", "held", "message", "reason", "sent", "thread"]);
+    // A mail's tries: ids and a count.
+    assert.deepEqual((db.prepare("PRAGMA table_info(tries)").all() as Array<{ name: string }>).map((c) => c.name).sort(), ["actor", "at", "count", "message"]);
+    assert.ok(!JSON.stringify(db.prepare("SELECT * FROM tries").all()).includes("@"));
   });
 
   it("sends a token to Google alone, and never the deployment's", () => {

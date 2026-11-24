@@ -151,11 +151,38 @@ export function record(db: DatabaseSync, actor: string, h: Omit<Handled, "at">):
       h.held ?? null,
       at,
     );
+    // An outcome: the message's tries are over.
+    db.prepare("DELETE FROM tries WHERE actor = ? AND message = ?").run(actor, h.message);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
   }
+}
+
+// ── a mail that keeps failing ─────────────────────────────────────────────
+
+/** How many times `reply` sets out to write a reply to a message before it hands the message to the person. */
+export const TRIES = 3;
+/** What Needs you says for a message handed off after its tries: the person's words, never an error's. */
+export const COULDNT_WRITE = "Jamie couldn't write a reply";
+
+/** How many times a reply to this message was set out on and got no outcome. */
+export function triesOf(db: DatabaseSync, actor: string, message: string): number {
+  return (db.prepare("SELECT count FROM tries WHERE actor = ? AND message = ?").get(actor, message) as { count: number } | undefined)?.count ?? 0;
+}
+
+/**
+ * One more try at a reply to this message: counted as `context` sets out to
+ * write it, before the mail is gathered and the model asked. Whatever ends
+ * the try before `answer` records an outcome (the model failing, no
+ * structured answer, the run cut off) leaves it counted; an outcome clears
+ * it (`record`).
+ */
+export function tried(db: DatabaseSync, actor: string, message: string): void {
+  db.prepare(
+    "INSERT INTO tries (actor, message, count, at) VALUES (?, ?, 1, ?) ON CONFLICT (actor, message) DO UPDATE SET count = count + 1, at = excluded.at",
+  ).run(actor, message, new Date().toISOString());
 }
 
 /** Every draft `answer` left that is still a thread's latest. */
