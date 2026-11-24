@@ -51,6 +51,14 @@ export function gmailLink(address: string | undefined, where: "drafts" | { threa
   return url.href;
 }
 
+/** The address a person writes to for Email Jamie: their own, with +jamie (their own +tag taken off first). */
+export function jamieAddress(address: string | undefined): string | undefined {
+  const at = address?.lastIndexOf("@") ?? -1;
+  if (!address || at < 1) return undefined;
+  const local = address.slice(0, at).replace(/\+.*$/, "");
+  return local ? `${local}+jamie@${address.slice(at + 1)}` : undefined;
+}
+
 const parse = (raw: string | undefined): URL | undefined => {
   if (!raw) return undefined;
   try {

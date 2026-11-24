@@ -443,8 +443,11 @@ async function inTurn<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R[]> 
   return out;
 }
 
-/** One message, whole, or (`minimal`) its id, thread, labels and time alone; none when it is gone (deleted since it was listed). */
-export async function messageOf(ctx: Ctx, token: string, id: string, format: "full" | "minimal" = "full"): Promise<GMessage | undefined> {
+/** How much of a message Gmail gives: whole; its headers (`metadata`); or its id, thread, labels and time alone (`minimal`). */
+export type Format = "full" | "metadata" | "minimal";
+
+/** One message, read at `format`; none when it is gone (deleted since it was listed). */
+export async function messageOf(ctx: Ctx, token: string, id: string, format: Format = "full"): Promise<GMessage | undefined> {
   const res = await gmail(ctx, token, `/messages/${encodeURIComponent(id)}`, { query: { format } });
   if (res.status === 404) return undefined;
   if (!res.ok) throw refused(res, token, "show a message");
@@ -452,7 +455,7 @@ export async function messageOf(ctx: Ctx, token: string, id: string, format: "fu
 }
 
 /** Messages by id, those still there: whole, or `minimal`. */
-export async function messagesOf(ctx: Ctx, token: string, ids: string[], format: "full" | "minimal" = "full"): Promise<GMessage[]> {
+export async function messagesOf(ctx: Ctx, token: string, ids: string[], format: Format = "full"): Promise<GMessage[]> {
   return (await inTurn(ids, (id) => messageOf(ctx, token, id, format))).filter((m): m is GMessage => !!m);
 }
 
@@ -508,7 +511,7 @@ export function writeCursor(c: Cursor): string {
  * labels, time) for a caller that reads each message again itself. With no
  * `since`, no mail and no call to Gmail: only where to start.
  */
-export async function lookSince(ctx: Ctx, token: string, search: string, since: string | undefined, format: "full" | "minimal"): Promise<{ messages: GMessage[]; since: string; more: boolean }> {
+export async function lookSince(ctx: Ctx, token: string, search: string, since: string | undefined, format: Format): Promise<{ messages: GMessage[]; since: string; more: boolean }> {
   const now = Date.now();
   if (!since?.trim()) return { messages: [], since: writeCursor({ after: now, seen: new Map() }), more: false };
   const cur = readCursor(since);
@@ -634,7 +637,11 @@ export interface Outgoing {
   text: string;
   inReplyTo?: string;
   references?: string[];
+  /** Headers of the package's own, `X-` names alone: a mark a later look reads. */
+  marks?: Record<string, string>;
 }
+
+const MARK = /^X-[A-Za-z0-9-]{1,60}$/;
 
 /** An RFC 2822 message, base64url as Gmail's `raw` takes it. */
 export function rawOf(o: Outgoing): string {
@@ -644,6 +651,10 @@ export function rawOf(o: Outgoing): string {
     `Subject: ${encodeWords(oneLine(o.subject))}`,
     ...(o.inReplyTo ? [`In-Reply-To: ${oneLine(o.inReplyTo)}`] : []),
     ...(o.references?.length ? [`References: ${o.references.map(oneLine).join(`${CRLF} `)}`] : []),
+    ...Object.entries(o.marks ?? {}).map(([k, v]) => {
+      if (!MARK.test(k) || !ascii(oneLine(v))) throw new Error(`not a mark the package writes: ${scrub(k)}`);
+      return `${k}: ${oneLine(v)}`;
+    }),
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
@@ -708,6 +719,15 @@ export async function sendDraft(ctx: Ctx, token: string, draft: string): Promise
   if (!res.ok) throw refused(res, token, "send it");
   const b = (res.body ?? {}) as { id?: unknown; threadId?: unknown };
   return { message: String(b.id ?? ""), thread: String(b.threadId ?? "") };
+}
+
+/** Whether a draft is still in Gmail: one sent, or deleted, is gone. */
+export async function draftThere(ctx: Ctx, token: string, draft: string): Promise<boolean> {
+  if (!isId(draft)) return false;
+  const res = await gmail(ctx, token, `/drafts/${encodeURIComponent(draft)}`, { query: { format: "minimal" } });
+  if (res.status === 404) return false;
+  if (!res.ok) throw refused(res, token, "show the draft");
+  return true;
 }
 
 /** The ids of every draft in the mailbox, up to 2,500. */

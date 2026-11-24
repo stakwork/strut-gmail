@@ -20,8 +20,16 @@ schedules:
     trigger: { every: interval, minutes: 5 }
     input: { since: "{{ last.output.since }}" }
     each: GOOGLE_TOKEN
+  # `ask` the same way. Email Jamie is off until a person turns it on in
+  # the Gmail app, and a run for a person with it off is three steps and no
+  # call to Gmail.
+  - workflow: ask
+    trigger: { every: interval, minutes: 5 }
+    input: { since: "{{ last.output.since }}" }
+    each: GOOGLE_TOKEN
 # The most one run of `reply` may spend on the model, in dollars: every
 # message it answers, its `reply-one` runs included. An admin's own cap
-# wins over it.
+# wins over it. `ask` has none: its run makes no model call, and the job it
+# starts runs as strut's own `job` workflow, in runs of its own.
 maxRunCostUsd:
   reply: 1
