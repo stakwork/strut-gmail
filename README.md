@@ -635,7 +635,9 @@ directory.
 One person's model calls go through a stand-in for the box's gateway
 instead. Strut's Mothership holds an authorization for them, made with a
 test key. The stand-in checks each call's run link, notes the cap it
-carries, and passes the call to the fake model.
+carries, and passes the call to the fake model. It answers in Anthropic's
+format too, so a scheduled run, at `reply`'s own `claude-sonnet-5-5`, can
+write and send a reply.
 
 ```bash
 STRUT_DIR=../strut npm test

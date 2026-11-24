@@ -367,6 +367,46 @@ class FakeModel {
   base = "";
   turns: Array<{ model: string; system: string; prompt: string; tools: string[] }> = [];
 
+  /**
+   * The same model behind Anthropic's Messages API, as the box's gateway
+   * reaches it for an Anthropic model: `reply`'s own, which a schedule runs.
+   */
+  anthropic(body: { model: string; stream?: boolean; system?: unknown; messages: Array<{ role: string; content: unknown }>; tools?: Array<{ name: string }> }, res: ServerResponse): void {
+    const text = (c: unknown) => (typeof c === "string" ? c : Array.isArray(c) ? c.map((p: { text?: string }) => p.text ?? "").join("") : "");
+    const tools = (body.tools ?? []).map((t) => t.name);
+    const last = body.messages.at(-1)?.content;
+    const final = tools.find((t) => t.includes("final_answer"));
+    let block: { type: "text"; text: string } | { type: "tool_use"; id: string; name: string; input: Record<string, string> };
+    if (Array.isArray(last) && last.some((p: { type?: string }) => p.type === "tool_result")) block = { type: "text", text: "Done." };
+    else if (!final) {
+      res.writeHead(400, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: `no final_answer tool among ${tools.join(", ")}` } }));
+    } else {
+      const prompt = body.messages.filter((m) => m.role === "user").map((m) => text(m.content)).join("\n");
+      this.turns.push({ model: body.model, system: text(body.system), prompt, tools });
+      block = { type: "tool_use", id: `toolu_${this.turns.length}`, name: final, input: this.decide(prompt) };
+    }
+    const stop = block.type === "tool_use" ? "tool_use" : "end_turn";
+    if (!body.stream) {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ id: "msg_1", type: "message", role: "assistant", model: body.model, content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 20 } }));
+    }
+    res.writeHead(200, { "content-type": "text/event-stream" });
+    const event = (type: string, data: Record<string, unknown> = {}) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+    event("message_start", { message: { id: "msg_1", type: "message", role: "assistant", model: body.model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 100, output_tokens: 1 } } });
+    if (block.type === "tool_use") {
+      event("content_block_start", { index: 0, content_block: { ...block, input: {} } });
+      event("content_block_delta", { index: 0, delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) } });
+    } else {
+      event("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+      event("content_block_delta", { index: 0, delta: { type: "text_delta", text: block.text } });
+    }
+    event("content_block_stop", { index: 0 });
+    event("message_delta", { delta: { stop_reason: stop, stop_sequence: null }, usage: { output_tokens: 20 } });
+    event("message_stop");
+    res.end();
+  }
+
   /** What the model "writes" for the mail it answers. */
   decide(prompt: string): Record<string, string> {
     const thread = prompt.slice(prompt.indexOf("<thread"));
@@ -803,6 +843,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
   let ada: Mailbox;
   let bea: Mailbox;
   let fay: Mailbox;
+  let gil: Mailbox;
   let ivy: Mailbox;
 
   before(async () => {
@@ -831,6 +872,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
         res.writeHead(401, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: { message: `the gateway refused the run link: ${(e as Error).message}` } }));
       }
+      if ((req.url ?? "").startsWith("/anthropic/")) return model.anthropic(JSON.parse(Buffer.concat(chunks).toString("utf8")), res);
       const up = await fetch(`${model.base}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: Buffer.concat(chunks) });
       res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/json" });
       res.end(Buffer.from(await up.arrayBuffer()));
@@ -843,7 +885,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     bea = google.mailbox(T.bea, "bea@acme.example", "Bea Smith", [READONLY]);
     google.mailbox(T.dan, "dan@acme.example", "Dan");
     google.stubborn.add(T.dan);
-    google.mailbox(T.gil, "gil@acme.example", "Gil Park");
+    gil = google.mailbox(T.gil, "gil@acme.example", "Gil Park");
     google.mailbox(T.hal, "hal@acme.example", "Hal Reed");
     google.mailbox(T.deployment, "the-box@acme.example", "The Box");
 
@@ -904,13 +946,13 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
       llmAuth: mothership.llmAuth,
     });
     mothership.mount(strut);
-    const gil = mintDelegation({ actor: "gil", orgPriv, userPriv: randomBytes(32) });
+    const delegation = mintDelegation({ actor: "gil", orgPriv, userPriv: randomBytes(32) });
     await mothership.delegations.put("gil", {
-      macaroon: gil.macaroon,
-      delegationId: gil.delegationId,
+      macaroon: delegation.macaroon,
+      delegationId: delegation.delegationId,
       apiKey: "gateway-key",
       baseUrl: `http://127.0.0.1:${typeof gatewayAt === "object" && gatewayAt ? gatewayAt.port : 0}`,
-      exp: gil.exp,
+      exp: delegation.exp,
     });
     await install(HERE);
     const other = join(root, "acme-other");
@@ -976,15 +1018,18 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     throw new Error(`${workflow} ${runId} never ended`);
   };
 
+  const REPLY = "stadeum/gmail/reply";
+  /** The package's schedule of `reply`, as strut lists it. */
+  const view = async () => ((await (await strut.app.request("/automations")).json()).automations as any[]).find((a) => a.package === "stadeum/gmail");
+  /** One fire of it, as its clock would: each person's run, once it has ended. */
+  const fire = async () => {
+    const res = await strut.app.request(`/workflows/${encodeURIComponent(REPLY)}/automations/${(await view()).id}/fire`, { method: "POST" });
+    const body = await res.json();
+    assert.equal(res.status, 202, JSON.stringify(body));
+    return Promise.all((body.runIds as string[]).map((runId) => ended(REPLY, runId)));
+  };
+
   it("runs `reply` for each person who holds their own GOOGLE_TOKEN, as them, from where their last run stopped; for nobody else", async () => {
-    const REPLY = "stadeum/gmail/reply";
-    const view = async () => ((await (await strut.app.request("/automations")).json()).automations as any[]).find((a) => a.package === "stadeum/gmail");
-    const fire = async () => {
-      const res = await strut.app.request(`/workflows/${encodeURIComponent(REPLY)}/automations/${(await view()).id}/fire`, { method: "POST" });
-      const body = await res.json();
-      assert.equal(res.status, 202, JSON.stringify(body));
-      return Promise.all((body.runIds as string[]).map((runId) => ended(REPLY, runId)));
-    };
     assert.equal((await view()).people, 0, "the deployment's GOOGLE_TOKEN is nobody's");
     assert.deepEqual(await fire(), [], "so a fire runs nothing for it");
 
@@ -1041,6 +1086,22 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     google.add(T.gil, { from: "Bob Stone <bob@acme.example>", subject: "Coffee", text: "Coffee on Friday?" });
     const own = await run("test/gils-replies", replied.since);
     assert.deepEqual(capped.filter((c) => c.run === own.runId).map((c) => c.usd), [DEFAULT_CAP], "the cap of the workflow the run is");
+  });
+
+  it("sends on the schedule under the person's Send choice: from their own mailbox, as them, at reply's own model and cap", async () => {
+    assert.equal((await ok(page("gil")("stadeum/gmail/save", { choice: "anyone" }))).choice, "anyone");
+    const una = google.add(T.gil, { from: "Una Park <una@stranger.example>", subject: "Monday", text: "Are you free on Monday?" });
+    const turns = model.turns.length;
+    const n = calls.length;
+    const runs = await fire();
+    assert.deepEqual(runs.map((r) => [r.start.principal, r.summary.status]).sort(), [["gil", "success"], ["hal", "success"]]);
+    const gils = runs.find((r) => r.start.principal === "gil")!;
+    assert.deepEqual(model.turns.slice(turns).map((t) => t.model), ["claude-sonnet-5-5"], "reply's own model: a schedule passes no params");
+    assert.deepEqual(capped.filter((c) => c.run === gils.runId).map((c) => c.usd), [1], "under reply's cap");
+    const sent = [...gil.messages.values()].filter((x) => x.threadId === una.threadId && x.labelIds.includes("SENT"));
+    assert.deepEqual(sent.map((x) => [get(x.headers, "From"), get(x.headers, "To")]), [['"Gil Park" <gil@acme.example>', '"Una Park" <una@stranger.example>']], "from Gil's own address, to Una alone");
+    assert.deepEqual(since(n).filter((c) => c.url.endsWith("/drafts/send")).map((c) => c.auth), [`Bearer ${T.gil}`], "sent with Gil's own token, once");
+    assert.ok(since(n).every((c) => c.auth === `Bearer ${T.gil}` || c.auth === `Bearer ${T.hal}`), "each run on its own person's mailbox");
   });
 
   it("says a person with no token of their own is not connected, though the deployment has one, and asks Google nothing", async () => {
@@ -1378,7 +1439,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     assert.deepEqual(await ok(page("fay")("stadeum/gmail/save", { instructions: "Sign off with Fay." })), { ...defaults, instructions: "Sign off with Fay." });
     assert.deepEqual(await ok(page("fay")("stadeum/gmail/save", { search: "   " })), { ...defaults, instructions: "Sign off with Fay." }, "an empty search is the default");
     assert.deepEqual(await step("stadeum/gmail/settings", {}, "fay"), { ...defaults, instructions: "Sign off with Fay." }, "a workflow of Fay's reads the same");
-    assert.deepEqual(await step("stadeum/gmail/settings", {}, "gil"), defaults, "each person their own");
+    assert.deepEqual(await step("stadeum/gmail/settings", {}, "hal"), defaults, "each person their own");
   });
 
   it("reads the pages a box adds under Mail Replies, by name, through strut's graph", async () => {
@@ -1759,7 +1820,7 @@ describe("stadeum/gmail on strut", { timeout: 300_000 }, () => {
     const db = await strut.services.appDb.open(APP);
     const people = db.prepare("SELECT * FROM people").all();
     const handled = db.prepare("SELECT * FROM handled").all() as Array<Record<string, unknown>>;
-    assert.deepEqual(people.map((p: any) => p.actor).sort(), ["fay", "ivy"], "the two who changed a choice");
+    assert.deepEqual(people.map((p: any) => p.actor).sort(), ["fay", "gil", "ivy"], "the three who changed a choice");
     assert.ok(handled.length >= 8);
     assert.deepEqual([...new Set(handled.map((h) => h["actor"]))].sort(), ["fay", "gil", "ivy"], "the three whose mail Replies answered");
     const kept = JSON.stringify(handled);
