@@ -230,7 +230,7 @@ when any of these holds. They are in the step (`holdBack`,
    besides the mailbox's own addresses (its send-as addresses, `+tag` or
    not);
 2. **the reply would go to someone other than the sender**: a Reply-To
-   elsewhere. A reply is written from what its recipient has already
+   elsewhere (ruling 13). A reply is written from what its recipient has already
    seen, and `context` gathers the earlier mail with the sender; with a
    Reply-To elsewhere it gathers the thread alone, and the person judges
    the draft;
@@ -255,10 +255,11 @@ Mail from a list or a machine never gets this far: `context` and
   Reply-To, or its sender. Hold-back 2 means a sent reply only ever goes to
   the sender. The model names nobody and attaches nothing.
 
-Hold-back 2 is this package's addition to the plan's three. Without it, a
-message with a forged `From` of someone the person writes to, and a
-Reply-To of the forger's, would get a reply written from the person's
-mail with the real sender, sent to the forger.
+Hold-back 2 is ruling 13 of stadeum's `plans/gmail.md`: a message whose
+Reply-To is not its sender always gets a draft. Without it, a message with
+a forged `From` of someone the person writes to, and a Reply-To of the
+forger's, would get a reply written from the person's mail with the real
+sender, sent to the forger.
 
 ### What a run costs
 

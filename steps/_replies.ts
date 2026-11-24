@@ -215,7 +215,7 @@ export function toSeveral(m: GMessage, own: Set<string>): boolean {
  * changes it. (A handoff is a draft too; `answer` says so itself.)
  *
  * 1. the mail went to more people than the person;
- * 2. the reply would go to someone other than its sender: a Reply-To
+ * 2. the reply would go to someone other than its sender (ruling 13): a Reply-To
  *    elsewhere, whom the reply was not written for (`context` reads the
  *    earlier mail with the sender);
  * 3. under `written`, the person has not written to the sender before;
