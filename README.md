@@ -296,8 +296,9 @@ schedules:
     each: GOOGLE_TOKEN
 ```
 
-and this wrapper is not needed. A strut without #871 refuses `each:`, so
-it is not in `strut.yaml` yet.
+and this wrapper is not needed. #871 is merged into strut's `main`; a
+strut without it refuses `each:`, so it is not in `strut.yaml` until a
+release has it.
 
 ### What it keeps
 
@@ -460,14 +461,25 @@ rests on. The test runs each one.
   do: it inlines the entry page alone, and lists the pages under it for an
   agent to open with a tool, which this agent does not have.
 
-Two things strut lacks, worked around nowhere in the package:
+Two things strut is gaining, worked around nowhere in the package:
 
-- **A package can't ship a workflow's cost cap.** `maxRunCostUsd` is a
-  workflow's metadata, set with `PUT /workflows/:name/run-cap`, not a field
-  of its YAML. The plan's `maxRunCostUsd: 1` for `reply` waits for a way
-  to ship it.
-- **A package's schedule runs once, as its owner.** Per-person schedules
-  are stakwork/strut#871 ("Running `reply`", above).
+- **A workflow's cost cap, shipped by its package.** Today `maxRunCostUsd`
+  is a workflow's metadata on the box, set with `PUT
+  /workflows/:name/run-cap`. stakwork/strut#874 (open) adds a top-level map
+  in `strut.yaml`, by workflow name, which an admin's own cap on the box
+  overrides:
+
+  ```yaml
+  maxRunCostUsd:
+    reply: 1
+  ```
+
+  A strut without #874 refuses the key, so it is not in `strut.yaml` yet.
+- **A schedule for each person:** stakwork/strut#871, merged into strut's
+  `main` ("Running `reply`", above).
+
+Both keys go into `strut.yaml` in one change once both are released, and
+this README will then say which strut the package needs.
 
 ## What a box needs
 
