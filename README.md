@@ -471,8 +471,9 @@ Two things strut lacks, worked around nowhere in the package:
 
 ## What a box needs
 
-- **A strut with `provides.secrets` and `secrets.own`** (stakwork/strut#789,
-  #790). Its `main` has them.
+- **A strut at or after stakwork/strut#867's merge** (`main` @3a8e900e),
+  which has `provides.secrets` and `secrets.own` (#789, #790) too. On an
+  older strut, the `agent` step wants a `cwd`, and `reply` fails.
 - **Secrets that refresh themselves** (the plan's item 1, in strut). A
   Google access token lasts about an hour. The steps read
   `secrets.own.get("GOOGLE_TOKEN")` and send what it gives as a bearer
