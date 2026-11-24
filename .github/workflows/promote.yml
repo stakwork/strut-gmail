@@ -1,0 +1,49 @@
+name: promote
+
+# Moves `stable`, the branch boxes follow (git+https://github.com/stakwork/strut-gmail@stable),
+# to a commit on main whose checks passed. Nothing else moves it: a merge to
+# main changes no box until someone runs this. A rollback is the same run
+# with an older commit of main. Run it from the Actions tab, or:
+#
+#   gh workflow run promote.yml -R stakwork/strut-gmail -f commit=<sha>
+#
+# The first run makes `stable`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "The commit on main to move stable to (full or short sha)"
+        required: true
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move stable
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ inputs.commit }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse --verify --quiet "${COMMIT}^{commit}") || { echo "::error::no commit $COMMIT"; exit 1; }
+          git merge-base --is-ancestor "$sha" origin/main || { echo "::error::$sha is not on main"; exit 1; }
+          passed=$(gh run list -R "$GITHUB_REPOSITORY" --workflow checks.yml --commit "$sha" --status success --json databaseId --jq length)
+          [ "$passed" -gt 0 ] || { echo "::error::checks have not passed on $sha"; exit 1; }
+          from=$(git rev-parse --verify --quiet origin/stable || echo none)
+          git push --force origin "$sha:refs/heads/stable"
+          echo "### stable: ${from:0:7} → ${sha:0:7}" >> "$GITHUB_STEP_SUMMARY"
