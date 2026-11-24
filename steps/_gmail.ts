@@ -470,10 +470,10 @@ export async function idsOf(ctx: Ctx, token: string, q: string, max: number): Pr
   return { ids, over: !!pageToken };
 }
 
-/** A thread's messages, whole, oldest first. */
-export async function threadOf(ctx: Ctx, token: string, thread: string): Promise<GMessage[]> {
+/** A thread's messages, oldest first: whole, or their headers alone (`metadata`). */
+export async function threadOf(ctx: Ctx, token: string, thread: string, format: "full" | "metadata" = "full"): Promise<GMessage[]> {
   if (!isId(thread)) throw new Error(`not a thread's id: ${scrub(thread)}`);
-  const res = await gmail(ctx, token, `/threads/${encodeURIComponent(thread)}`, { query: { format: "full" } });
+  const res = await gmail(ctx, token, `/threads/${encodeURIComponent(thread)}`, { query: { format } });
   if (res.status === 404) throw new Error(`there is no thread ${thread} in your mailbox`);
   if (!res.ok) throw refused(res, token, "show the thread");
   const messages = ((res.body ?? {}) as { messages?: GMessage[] }).messages ?? [];
@@ -624,16 +624,68 @@ export function rawOf(o: Outgoing): string {
   return Buffer.from(lines.join(CRLF) + CRLF + CRLF + body, "utf8").toString("base64url");
 }
 
-/** The mailbox's own From: its default send-as address and name, as Gmail's settings say. */
-export async function senderOf(ctx: Ctx, token: string): Promise<Address> {
+type SendAs = { sendAsEmail?: unknown; displayName?: unknown; isDefault?: unknown; isPrimary?: unknown };
+
+async function sendAsOf(ctx: Ctx, token: string): Promise<SendAs[]> {
   const res = await gmail(ctx, token, "/settings/sendAs");
   if (!res.ok) throw refused(res, token, "say which address mail goes out from");
-  const list = ((res.body ?? {}) as { sendAs?: Array<{ sendAsEmail?: unknown; displayName?: unknown; isDefault?: unknown; isPrimary?: unknown }> }).sendAs ?? [];
+  return ((res.body ?? {}) as { sendAs?: SendAs[] }).sendAs ?? [];
+}
+
+/** An address with its +tag taken off, lower case: Gmail delivers both to one mailbox. */
+export const plainAddress = (address: string): string => address.toLowerCase().replace(/\+[^@]*@/, "@");
+
+/** Every address the mailbox sends as, plain (`plainAddress`): whether mail went to it alone. */
+export async function ownAddressesOf(ctx: Ctx, token: string): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const s of await sendAsOf(ctx, token)) if (typeof s.sendAsEmail === "string" && isAddress(s.sendAsEmail)) out.add(plainAddress(s.sendAsEmail));
+  return out;
+}
+
+/** The mailbox's own From: its default send-as address and name, as Gmail's settings say. */
+export async function senderOf(ctx: Ctx, token: string): Promise<Address> {
+  const list = await sendAsOf(ctx, token);
   const pick = list.find((s) => s.isDefault === true) ?? list.find((s) => s.isPrimary === true) ?? list[0];
   const address = typeof pick?.sendAsEmail === "string" ? pick.sendAsEmail : "";
   if (!isAddress(address)) throw new Error("Gmail's settings name no address to send from");
   const name = typeof pick?.displayName === "string" ? oneLine(pick.displayName).slice(0, 200) : "";
   return name ? { address, name } : { address };
+}
+
+/** A draft written over: Gmail's `drafts.update`, which keeps its id. `false` when it is gone (sent or deleted). */
+export async function updateDraft(ctx: Ctx, token: string, draft: string, raw: string, threadId: string | undefined): Promise<{ draft: string; message: string; thread: string } | false> {
+  if (!isId(draft)) return false;
+  const res = await gmail(ctx, token, `/drafts/${encodeURIComponent(draft)}`, { method: "PUT", body: { id: draft, message: { raw, ...(threadId ? { threadId } : {}) } } });
+  if (res.status === 404) return false;
+  if (!res.ok) throw refused(res, token, "change the draft");
+  return draftOut(res.body);
+}
+
+/** A new draft: Gmail's `drafts.create`. */
+export async function createDraft(ctx: Ctx, token: string, raw: string, threadId: string | undefined): Promise<{ draft: string; message: string; thread: string }> {
+  const res = await gmail(ctx, token, "/drafts", { method: "POST", body: { message: { raw, ...(threadId ? { threadId } : {}) } } });
+  if (!res.ok) throw refused(res, token, "keep the draft");
+  return draftOut(res.body);
+}
+
+function draftOut(body: unknown): { draft: string; message: string; thread: string } {
+  const b = (body ?? {}) as { id?: unknown; message?: { id?: unknown; threadId?: unknown } };
+  return { draft: String(b.id ?? ""), message: String(b.message?.id ?? ""), thread: String(b.message?.threadId ?? "") };
+}
+
+/** The ids of every draft in the mailbox, up to 2,500. */
+export async function draftIdsOf(ctx: Ctx, token: string): Promise<Set<string>> {
+  const ids = new Set<string>();
+  let pageToken: string | undefined;
+  for (let page = 0; page < 5; page++) {
+    const res = await gmail(ctx, token, "/drafts", { query: { maxResults: 500, ...(pageToken ? { pageToken } : {}) } });
+    if (!res.ok) throw refused(res, token, "list your drafts");
+    const body = (res.body ?? {}) as { drafts?: Array<{ id?: unknown }>; nextPageToken?: unknown };
+    for (const d of body.drafts ?? []) if (isId(d.id)) ids.add(d.id);
+    pageToken = typeof body.nextPageToken === "string" && body.nextPageToken ? body.nextPageToken : undefined;
+    if (!pageToken) break;
+  }
+  return ids;
 }
 
 /** What `draft` and `send` take. */

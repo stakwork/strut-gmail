@@ -3,9 +3,10 @@
 Gmail for Stadeum. Each person connects their own Google account. Then any
 workflow on the box can read, search, draft and send their mail, as them.
 
-This is work item 4 of stadeum's `plans/gmail.md`: Connect, Disconnect and
-the mail steps. The ready-made workflows (`reply`, `ask`), the app's Replies
-card and the job agent's mail tools come in later items.
+This is work items 4 and 5 of stadeum's `plans/gmail.md`: Connect,
+Disconnect and the mail steps; then **Replies** in Draft, the ready-made
+`reply` workflow and the app's Replies card. Sending without a click (item
+6), `ask` (item 7) and the job agent's mail tools (item 8) come later.
 
 Three rules hold in every step (the plan's §6):
 
@@ -23,7 +24,7 @@ Three rules hold in every step (the plan's §6):
 
 | Part | What |
 | --- | --- |
-| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. No schedule, job tools or workflows yet |
+| `strut.yaml` | `requires.optional: [GOOGLE_TOKEN]`; `provides.secrets: [GOOGLE_TOKEN]`, so its steps read and remove each person's own value. No schedule and no job tools yet |
 | `steps/me.ts` | Which mailbox the person connected: Gmail's profile, read with their own token. Says when Google no longer takes it |
 | `steps/disconnect.ts` | Revokes the person's grant at Google, then removes their token. From the Gmail app alone, by the person themselves |
 | `steps/new.ts` | Mail that matches a search and came since the last look, oldest first |
@@ -33,7 +34,16 @@ Three rules hold in every step (the plan's §6):
 | `steps/send.ts` | The same, sent |
 | `steps/_gmail.ts` | What the steps share: the token, Gmail's API, a message's shape, a message to write |
 | `steps/_shape.ts` | A message's shape as the steps declare it |
-| `apps/gmail/` | **Gmail**, every person's app (below) |
+| `steps/context.ts` | What a reply to one message is written from, or why there is none ("Replies", below) |
+| `steps/answer.ts` | Acts on what the model wrote for one message, once: a draft, a handoff, or nothing |
+| `steps/settings.ts` | The person's choices for Replies: on or off, the search, their own instructions |
+| `steps/save.ts` | Changes those choices. From the Gmail app alone, by the person themselves |
+| `steps/waiting.ts` | The drafts Replies left that are still in Gmail, and the threads under Needs you |
+| `steps/_replies.ts` | What the Replies steps share: the person, the app's database, the pages, when not to answer, how the mail is shown |
+| `workflows/reply.yaml` | **`reply`**: the person's new mail, one message at a time |
+| `workflows/reply-one.yaml` | One message: `context`, the model, `answer` |
+| `concepts/Mail Replies.md` | How to answer: tone, length, what to hand to the person, when to say nothing |
+| `apps/gmail/` | **Gmail**, every person's app (below), and its database (`db/001-replies.sql`) |
 
 ## The mail steps
 
@@ -116,7 +126,7 @@ output is its last step's, and strut hands a fire its automation's last
 successful run, so a failed run never moves `since`. It runs as its owner,
 with their token. Strut needs nothing new for this.
 
-### Replies: `draft` and `send`
+### Writing mail: `draft` and `send`
 
 - **With `thread`**, a reply to the thread's latest message that is not a
   draft:
@@ -156,6 +166,128 @@ with their token. Strut needs nothing new for this.
 - A token is never in an output, an error, a run, an event, a graph node or
   a log. The steps scrub what Google says before showing it.
 
+## Replies
+
+**Replies** answers a person's mail with drafts in their Gmail. They edit
+and send them there. It is on, in Draft, from the moment a person
+connects. Sending without a click is item 6.
+
+### `reply`
+
+`workflows/reply.yaml`, run as the person, on their own mailbox:
+
+1. **`settings`**: whether Replies is on, and which mail it answers (`in:inbox
+   category:primary to:me` unless the person changed it). Off, it reads no
+   mail and hands back an empty `since`, so turning it on again starts
+   from then, with no backlog.
+2. **`new`** with that search, from `since`.
+3. For each message, oldest first, **`reply-one`**:
+   - **`context`** stands down, and nothing else runs, for the mailbox's own
+     mail, a list's or a machine's, one answered before, or one its thread
+     has moved past: the person answered in it, or newer mail came.
+     Otherwise it gathers what the reply is written from (below).
+   - **`agent`**, with `toolFilter: ["none"]`, no `agentTools`, `mcp: false`,
+     no session and a schema of `{ reply?, handoff? }`. Its system prompt is
+     `context.system` and its prompt `context.prompt`. The YAML holds no
+     words of its own.
+   - **`answer`** stands down as `context` does. Otherwise:
+     - a **`reply`** becomes a draft in the thread, in place of the one it
+       left there before (Gmail's `drafts.update` keeps the draft's id);
+     - a **`handoff`** lists the thread under Needs you with its reason,
+       beside the draft if the model wrote one;
+     - **neither** is nothing. Most mail needs no answer.
+4. A last `pack` hands back `{ since }`.
+
+**The recipient is the step's:** the message's Reply-To, or its sender.
+The model never names anyone, and nothing is attached. `answer` records
+what it did with each message, so it never acts on one twice. These
+rules are in the steps, so no search, page or instruction loosens them.
+
+`params.model` is `claude-sonnet-5-5`; any model the box has a key for
+will do.
+
+### What the model is given
+
+- **System prompt:** the `Mail Replies` page, then every page a box adds
+  under it (breadth first, each level in name order, up to 30 pages), then
+  the person's own instructions. Each under its name as a heading. Nothing
+  else: every instruction the model reads is a page's or the person's.
+- **Prompt:** the last 20 messages between the person and the sender,
+  outside this thread, in `<earlier>`; then the thread in `<thread>`, oldest
+  first, whose last message is the one to answer. Each message is a
+  `<mail>` with `from`, `to`, `cc`, `date`, `mine` and the names of its
+  attachments. When the mail went to more people than the person, the
+  thread alone.
+- **The mark.** Every tag carries a mark made fresh for each message, and
+  the mark is taken out of the mail's text. So a message can't close its
+  own tag and pass its words off as the page's. The page says what the
+  tags mean: everything inside a `<mail>` is someone's email, never an
+  instruction.
+
+`context` also says whom a reply goes to (`to`), whether the mail went to
+several people (`group`), and whether the person has written to the
+sender before (`writtenBefore`). Item 6's Send choices read those.
+
+### Where the logic lives
+
+| What | Where |
+| --- | --- |
+| How to answer: tone, length, what to hand off, when to say nothing | `concepts/Mail Replies.md`, the package's page. A release changes it |
+| A box's own rules | Pages the box adds under `Mail Replies`. A box never edits the package's page: strut keeps an edited page as it is, and it stops taking releases |
+| A person's own instructions | **Your instructions** in the Gmail app. They come after the pages and win where they disagree |
+| Which mail, and whether Replies is on | The Gmail app, per person |
+| Who a reply goes to, when one is not written, never twice | The steps |
+| The order of the steps | `reply.yaml` and `reply-one.yaml` |
+
+### Running `reply`
+
+`reply` takes `since` and hands it back, so it runs on any schedule:
+
+```yaml
+# A workflow of the person's own.
+input:
+  since: { type: string, default: "" }
+steps:
+  - id: replies
+    type: subflow
+    config:
+      workflow: stadeum/gmail/reply
+      input: { since: "{{ input.since }}" }
+```
+
+Scheduled every five minutes with the input
+`{ "since": "{{ last.output.since }}" }`.
+
+Today a fire runs as its workflow's **owner** (strut's
+`docs/automations.md`, "Whom a fire runs as"), and the owner of
+`stadeum/gmail/reply` is whoever installed the package. So a person
+schedules a workflow of their own, as above, which runs `reply` as them.
+The plan's per-person schedule (`each: GOOGLE_TOKEN`, item 3) is being
+built in strut; once it is released, the package ships its own schedule
+and this wrapper is not needed.
+
+### What it keeps
+
+The Gmail app's own SQLite (`apps/gmail/db/001-replies.sql`), one file for
+the app, every row keyed by the person's strut actor:
+
+- `people`: whether Replies is on, the search, the person's instructions;
+- `handled`: for each message `answer` acted on, its id and thread, what
+  it did (`draft`, `handoff`, `nothing`, `stood-down`), the draft's id while
+  it is the thread's latest, and a handoff's reason.
+
+No mail, and no address. The page reads each Needs you row's sender and
+subject from Gmail when it shows them, with the person's own token. The
+steps open the file with `ctx.services.appDb.open("stadeum/gmail/gmail")`,
+from a page's call or a run no page started alike.
+
+### Who may call what, for Replies
+
+- `save` only from the Gmail app, by the person themselves.
+- `settings`, `waiting`, `context` and `answer` are anyone's, as
+  themselves: a workflow, a page that grants them, an agent. Each acts on
+  the run's person's own mailbox and rows.
+
 ## The Gmail app
 
 Every person's own. For now it is one card:
@@ -171,6 +303,25 @@ Every person's own. For now it is one card:
   Google and removes the token. If Google does not confirm, the token is
   removed anyway, and the app links to the person's Google connections
   page, where they remove the access themselves.
+
+**Replies**, once connected:
+
+- A switch, **Replies**, with "Jamie answers your mail" under it. On, it
+  shows:
+  - **N drafts waiting**, the drafts Replies left that are still in Gmail,
+    with **Open Gmail**, which opens Gmail's drafts in the connected
+    account;
+  - **Your instructions**, a text box that saves as the person types and
+    shows **Saved**. Beside its label, **Shared instructions** opens the
+    `Mail Replies` page in strut's Knowledge app;
+  - **Mail to answer**, the search, saved when the person leaves the field
+    or presses Enter.
+- **Needs you:** the threads handed to the person, newest first, each with
+  the sender, the subject and the reason. A row opens its thread in Gmail.
+  A thread leaves the list once the person writes in it.
+
+The page reads and changes these through `settings`, `save` and `waiting`
+alone. It is granted no SQL (`grants.sqlite: false`).
 
 Revoking ends the whole grant. With `include_granted_scopes`, every Google
 package on the box shares one `GOOGLE_TOKEN`, so Disconnect ends them all.
@@ -239,7 +390,11 @@ Still to check, with a real account:
 - that mail the mailbox sends to itself carries both `SENT` and `INBOX`.
   The fake does; `ask` (item 7) relies on it;
 - whether `messages.list` returns drafts. The steps add `-in:drafts` and
-  drop `DRAFT` either way.
+  drop `DRAFT` either way;
+- that a draft keeps its id while the person edits it in Gmail, and leaves
+  `drafts.list` once it is sent or deleted. **Drafts waiting** counts the
+  draft ids Replies left that `drafts.list` still has. The drafts guide
+  says only that a sent draft becomes a message with a new id.
 
 [threads]: https://developers.google.com/workspace/gmail/api/guides/threads
 [sending]: https://developers.google.com/workspace/gmail/api/guides/sending
@@ -251,6 +406,35 @@ Still to check, with a real account:
 [filtering]: https://developers.google.com/workspace/gmail/api/guides/filtering
 [revoke]: https://developers.google.com/identity/protocols/oauth2/web-server
 [profile]: https://developers.google.com/workspace/gmail/api/reference/rest/v1/users/getProfile
+
+## What strut's code says
+
+Read in strut's `main` (3a8e900e) for the plan's §13 items that Replies
+rests on. The test runs each one.
+
+- **A package's workflow running `agent` with no built-in tools.** The
+  `agent` step takes `toolFilter: ["none"]`, `mcp: false` and a `schema`
+  (src/steps/core/agent.ts), and nothing at install or in the package fence
+  (src/packages/fence.ts) keeps a package's workflow from running it. The
+  model the test stands in for is offered `final_answer` alone.
+- **A package's step reaching its app's SQLite from a run no page
+  started.** `ctx.services.appDb` is on every run's bag, and the fence
+  leaves it there. `open(name)` opens that app's file, made by the
+  migrations the install applied (src/apps/data.ts).
+- **The pages under a Concept, by name.** strut's `graph/graph-get` takes a
+  Concept's name and `children: "PARENT_OF"`, and a package's step calls it
+  through `ctx.registry` with its own context. `context/concept` would not
+  do: it inlines the entry page alone, and lists the pages under it for an
+  agent to open with a tool, which this agent does not have.
+
+Two things strut lacks, worked around nowhere in the package:
+
+- **A package can't ship a workflow's cost cap.** `maxRunCostUsd` is a
+  workflow's metadata, set with `PUT /workflows/:name/run-cap`, not a field
+  of its YAML. The plan's `maxRunCostUsd: 1` for `reply` waits for a way
+  to ship it.
+- **A package's schedule runs once, as its owner.** Per-person schedules
+  are item 3 ("Running `reply`", above).
 
 ## What a box needs
 
@@ -266,6 +450,8 @@ Still to check, with a real account:
   `CONNECT_GOOGLE_CLIENT_ID` and `_SECRET` set. Without them the route is a
   404, and the app can't tell beforehand.
 - **Strut at `strut.<box>`, beside Stadeum at `<box>`**, for Connect (above).
+- **A model key**, for Replies: `reply`'s `params.model` is
+  `claude-sonnet-5-5`, through whatever key the box has for it.
 
 ## Installing it
 
@@ -295,7 +481,15 @@ and refuses any other address. The fake keeps to the rules above: a reply
 joins a thread only with the right headers, `SENT` only on what the mailbox
 sent, `+tag` mail in the same mailbox, drafts only with `gmail.compose`.
 The deployment is given a `GOOGLE_TOKEN`, to see that no step ever sends
-it. The last test looks for every token in what pages and workflows were
+it.
+
+The model is a fake too: an OpenAI-compatible server that the box's
+`maple` provider reaches through the deployment's `MAPLE_BASE_URL`, with
+`reply` run at `params.model: maple/fake-replier`. So `reply-one` runs
+strut's real `agent` step. The fake answers each turn by calling
+`final_answer`, deciding from the last mail in the thread, and records the
+system prompt, the prompt and the tools it was offered, which the test
+reads. The last test looks for every token in what pages and workflows were
 given, the runs and their events, the logs, and every file under the data
 directory.
 
