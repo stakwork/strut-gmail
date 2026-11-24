@@ -556,7 +556,7 @@ when they reject it.
 
 ## The Gmail app
 
-Every person's own. For now it is one card:
+Every person's own:
 
 - **Not connected:** one button, **Connect Google**. It opens the box's
   connect seam with the package's two scopes and the way back:
@@ -661,6 +661,11 @@ Settled on the way:
 
 Still to check, with a real account:
 
+- Connect and Disconnect end to end, through stadeum's seam and Google.
+  The tests stand in for both: the app's links are checked, and the token
+  is written as the seam writes it;
+- that a connection lasts past an hour: strut renews `GOOGLE_TOKEN`
+  through the seam. No test here refreshes one;
 - that `after:` reads the same time as a message's `internalDate`. `new`
   filters by `internalDate` itself, so a mismatch could only miss mail
   whose `Date` header is older than when Gmail got it;
@@ -770,18 +775,23 @@ and reads the cap on each model call of a run of `reply`.
   `secrets.own` (#789, #790), and an `agent` step with no `cwd` (#867).
 - **The Mothership's model gateway**, for the cap. Without it a run of
   `reply` has no cap.
-- **Secrets that refresh themselves** (the plan's item 1, in strut). A
-  Google access token lasts about an hour. The steps read
-  `secrets.own.get("GOOGLE_TOKEN")` and send what it gives as a bearer
-  token, so strut must hand them a fresh one. Until it does, a connection
-  works for an hour, then the steps say to connect again.
-- **Google in stadeum's connect seam** (the plan's item 2):
-  `/api/connect/google` taking `scope` and `return`, with
-  `CONNECT_GOOGLE_CLIENT_ID` and `_SECRET` set. Without them the route is a
-  404, and the app can't tell beforehand.
+- **Google in stadeum's connect seam** (the plan's item 2; stadeum's
+  `docs/stack-spec.md`, "The connect seam"): `/api/connect/google` taking
+  `scope` and `return`, with `CONNECT_GOOGLE_CLIENT_ID` and
+  `CONNECT_GOOGLE_CLIENT_SECRET` set. Without them the route is a 404, and
+  the app can't tell beforehand.
+- **`CONNECT_URL` and `CONNECT_TOKEN` on strut**, so a token refreshes
+  itself (the plan's item 1; strut's src/actor-secrets.ts). A Google access
+  token lasts an hour. The seam hands strut its refresh token, and strut
+  renews the token through the seam when a step reads it near its end.
+  Without the two settings a connection works for an hour, then the steps
+  say to connect again. Stadeum's `scripts/init-env.sh` makes them.
 - **Strut at `strut.<box>`, beside Stadeum at `<box>`**, for Connect (above).
 - **A model key**, for Replies: `reply`'s `params.model` is
-  `claude-sonnet-5-5`, through whatever key the box has for it.
+  `claude-sonnet-5-5`, through whatever key the box has for it. A
+  scheduled run always uses it: a schedule passes no `params`.
+- **Strut's jobs**, for Email Jamie and Asked in a chat: its `job`
+  workflow, and a model for the job agent.
 
 ## Installing it
 
